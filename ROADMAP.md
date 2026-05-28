@@ -81,6 +81,32 @@ For parser/classifier/importer bugs uncovered on edge cases: **always a regressi
     - JSON output for `classify` is now always an array `[{file, format, facets}, ...]` (breaking: single-file invocations produce an array of length one).
     - `--verbose` flag added to `classify` and `check` to switch directory-mode output from summary table to per-file detail.
     - Verified on the original failure cases: `anthropics/claude-code` now classifies 26 files (was 0); `continuedev/continue` classifies 24 (was 0).
+- [x] **F12 (done 2026-05-28).** `doctor` directory mode parallelized.
+    - `runDirectoryMode` schedules per-file analysis across N goroutines bounded by a semaphore; stdout is serialized via mutex so per-file output stays coherent.
+    - New `--concurrency` flag (env `REIFY_CONCURRENCY`). Default: 1 for Ollama, 8 for cloud providers.
+    - Wall-time on the 238-file dogfooding corpus dropped from ~30-40min to ~15min; previously timing-out repos (supabase 77f, vscode 70f) now complete.
+
+### Phase 3 — Calibration battery for the LLM classifier
+
+After dropping keyword static analysis, every facet assignment now flows
+through the LLM. We need to know **how well the LLM actually agrees with
+human labellers per facet** before trusting it as the system of record:
+
+- [ ] Build a labelled corpus of ~500 instructions (100 per facet, drawn
+      from real OSS agent files) and have 2–3 humans agree on the gold label.
+- [ ] Run `ClassifyLLM` over the corpus per provider (Haiku, Sonnet,
+      Opus, Ollama llama4-scout) and compute per-facet precision, recall,
+      F1, and Cohen's kappa vs. the gold labels.
+- [ ] Report a confusion matrix per provider — where do classifications
+      leak between facets? Especially watch `guardrails ↔ security` and
+      `context ↔ strategy` (the historical static heuristics confused
+      these pairs systematically).
+- [ ] Define a minimum F1 per facet the project will guarantee, then add
+      a regression gate in CI on the labelled corpus.
+
+This is what the deleted `internal/checker/` benchmark protocol
+(`docs/benchmark/`) was supposed to enable; revive it now that the
+classifier path is single-source-of-truth LLM-driven.
 
 ### Out of scope (intentionally)
 
