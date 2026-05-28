@@ -1,0 +1,70 @@
+name: Mutation testing (nightly)
+
+on:
+  schedule:
+    # Every day at 03:00 UTC. Not run on PRs — too slow, results would be noisy.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Space-separated package paths (default: pilot set)'
+        required: false
+        default: './pkg/dag/... ./internal/classifier/... ./internal/checker/...'
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: gremlins
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Install gremlins
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+
+      - name: Validate package spec
+        env:
+          PACKAGES: ${{ inputs.packages || './pkg/dag/... ./internal/classifier/... ./internal/checker/...' }}
+        run: |
+          # Reject anything containing shell metacharacters. The default is fixed in YAML;
+          # workflow_dispatch input is user-controllable and requires write perms, but we
+          # still gate it to prevent accidental injection.
+          case "$PACKAGES" in
+            *[!a-zA-Z0-9_./[:space:]-]*)
+              echo "::error::packages input contains disallowed characters: $PACKAGES"
+              exit 1
+              ;;
+          esac
+          echo "PACKAGES=$PACKAGES" >> "$GITHUB_ENV"
+
+      - name: Run mutation testing
+        run: |
+          mkdir -p mutation-report
+          set +e
+          # PACKAGES has been validated against an allowlist regex in the previous step.
+          gremlins unleash --output=mutation-report/report.json $PACKAGES | tee mutation-report/report.txt
+          # Capture exit code but never fail the job — mutation scores are informational.
+          echo "exit=$?" >> mutation-report/meta.txt
+
+      - name: Summarise score
+        if: always()
+        run: |
+          echo '## Mutation score' >> "$GITHUB_STEP_SUMMARY"
+          grep -E 'Killed|Lived|Not viable|Mutation score' mutation-report/report.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: mutation-report/
+          retention-days: 14
