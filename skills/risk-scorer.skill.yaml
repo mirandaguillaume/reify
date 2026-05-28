@@ -1,0 +1,28 @@
+skill: risk-scorer
+version: "1.0.0"
+context:
+  consumes: [git_diff, test_results, lint_results]
+  produces: [risk_score]
+  memory: short-term
+strategy:
+  tools: [read_file, grep]
+  approach: diff-first
+  effort: medium
+  steps:
+    - analyze git diff scope and complexity
+    - cross-reference with test coverage
+    - cross-reference with lint severity
+    - assign risk score (0-10)
+guardrails:
+  - timeout: 3min
+  - require_risk_score
+observability:
+  trace_level: standard
+  metrics: [tokens, latency]
+security:
+  filesystem: read-only
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 3

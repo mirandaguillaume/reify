@@ -1,0 +1,6 @@
+agent: doctor
+description: "LLM-powered agent spec doctor: detects format, analyzes quality against research-backed checks, enriches with codebase context, produces actionable improvement recommendations"
+skills: [format-detector, analyzer, context-enricher, recommendation-builder]
+orchestration: parallel
+consumes: [agent_file]
+produces: [recommendations]

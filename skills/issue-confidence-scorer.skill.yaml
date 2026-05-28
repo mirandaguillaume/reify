@@ -1,0 +1,33 @@
+skill: issue-confidence-scorer
+version: "1.0.0"
+context:
+  consumes: [review_issues, claudemd_files]
+  produces: [scored_issues]
+  memory: short-term
+strategy:
+  tools: [read_file]
+  approach: scoring
+  effort: light
+  steps:
+    - for each issue, evaluate confidence on 0-100 scale
+    - for CLAUDE.md issues, double-check rule actually exists
+    - apply scoring rubric (0 false positive, 25 uncertain, 50 nitpick, 75 likely real, 100 certain)
+    - filter out issues scoring below 80
+guardrails:
+  - timeout: 2min
+  - min_score_threshold: 80
+observability:
+  trace_level: detailed
+  metrics: [tokens, issues_in, issues_out, filter_rate]
+security:
+  filesystem: read-only
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 3
+when_to_use:
+  triggers:
+    - after collecting review issues from multiple analyzers
+  dont_use:
+    - as standalone without preceding analysis skills

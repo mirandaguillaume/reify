@@ -1,0 +1,37 @@
+skill: pr-commenter
+version: "1.0.0"
+context:
+  consumes: [scored_issues, pr_url]
+  produces: [review_comment]
+  memory: short-term
+strategy:
+  tools: [bash]
+  approach: output-format
+  effort: light
+  steps:
+    - re-verify PR eligibility to confirm not closed or merged since analysis
+    - format issues with file links using full SHA
+    - post comment via gh pr comment
+    - if no issues, post no issues found message
+guardrails:
+  - timeout: 2min
+  - require_full_sha
+  - max_issues: 20
+observability:
+  trace_level: standard
+  metrics: [tokens, issues_posted]
+security:
+  filesystem: none
+  network: allowlist
+  secrets: [GITHUB_TOKEN]
+negotiation:
+  file_conflicts: yield
+  priority: 4
+when_to_use:
+  triggers:
+    - as final step of code review pipeline
+  dont_use:
+    - for local-only review without GitHub integration
+anti_patterns:
+  - excuse: "Using short SHA or HEAD references in links"
+    reality: "GitHub markdown renders links at comment time; short refs may be ambiguous"

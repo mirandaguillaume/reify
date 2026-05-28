@@ -1,0 +1,31 @@
+skill: context-enricher
+version: "1.0.0"
+context:
+  consumes: [agent_file]
+  produces: [context_recommendations]
+  memory: short-term
+strategy:
+  approach: code
+  tools: [read_file, bash]
+  effort: medium
+  steps:
+    - scan the codebase index for skills referenced by the agent
+    - compare referenced skills against available implementations in the repo
+    - identify gaps between declared skills and codebase reality
+guardrails:
+  - timeout: 15s
+  - max_files: 50
+observability:
+  trace_level: standard
+  metrics: [tokens, gap_count, file_count]
+security:
+  filesystem: read-only
+  network: none
+negotiation:
+  file_conflicts: yield
+  priority: 1
+when_to_use:
+  triggers:
+    - when codebase context should enrich the analysis beyond the agent file alone
+  dont_use:
+    - when no codebase is available or accessible

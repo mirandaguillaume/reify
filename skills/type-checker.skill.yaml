@@ -1,0 +1,26 @@
+skill: type-checker
+version: "1.0.0"
+context:
+  consumes: [file_tree, source_code]
+  produces: [type_errors]
+  memory: short-term
+strategy:
+  tools: [bash, read_file]
+  approach: static-analysis
+  effort: light
+  steps:
+    - run TypeScript compiler in noEmit mode
+    - collect type errors with file locations
+guardrails:
+  - timeout: 5min
+  - max_file_size: 500KB
+observability:
+  trace_level: standard
+  metrics: [tokens, error_count]
+security:
+  filesystem: read-only
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 1

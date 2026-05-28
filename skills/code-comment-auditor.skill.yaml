@@ -1,0 +1,32 @@
+skill: code-comment-auditor
+version: "1.0.0"
+context:
+  consumes: [pr_diff, source_code]
+  produces: [review_issues]
+  memory: short-term
+strategy:
+  tools: [read_file, grep]
+  approach: compliance-check
+  effort: medium
+  steps:
+    - read code comments in modified files like TODOs, warnings, invariants
+    - check if PR changes comply with comment guidance
+    - flag violations where changes contradict documented invariants
+guardrails:
+  - timeout: 5min
+observability:
+  trace_level: standard
+  metrics: [tokens, issue_count]
+security:
+  filesystem: read-only
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 2
+when_to_use:
+  triggers:
+    - when modified files contain meaningful code comments
+anti_patterns:
+  - excuse: "Treating all comments as requirements"
+    reality: "Some comments are notes, not constraints; focus on invariants and warnings"

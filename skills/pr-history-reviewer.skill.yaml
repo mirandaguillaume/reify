@@ -1,0 +1,33 @@
+skill: pr-history-reviewer
+version: "1.0.0"
+context:
+  consumes: [pr_diff, pr_history]
+  produces: [review_issues]
+  memory: short-term
+strategy:
+  tools: [bash]
+  approach: history-first
+  effort: medium
+  steps:
+    - find previous PRs that touched the same files
+    - read comments on those PRs
+    - check if any feedback applies to the current PR
+    - return applicable issues with links to original comments
+guardrails:
+  - timeout: 5min
+  - max_prs: 10
+observability:
+  trace_level: standard
+  metrics: [tokens, prs_analyzed, issue_count]
+security:
+  filesystem: none
+  network: allowlist
+  secrets: [GITHUB_TOKEN]
+negotiation:
+  file_conflicts: yield
+  priority: 2
+when_to_use:
+  triggers:
+    - when files have been reviewed in previous PRs
+  dont_use:
+    - for repositories with no PR history

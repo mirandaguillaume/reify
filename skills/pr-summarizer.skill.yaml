@@ -1,0 +1,30 @@
+skill: pr-summarizer
+version: "1.0.0"
+context:
+  consumes: [pr_url]
+  produces: [pr_summary]
+  memory: short-term
+strategy:
+  tools: [bash]
+  approach: diff-first
+  effort: light
+  steps:
+    - fetch PR diff via gh
+    - summarize the nature of changes
+    - return structured summary with files changed, purpose, risk areas
+guardrails:
+  - timeout: 2min
+  - max_summary_length: 500
+observability:
+  trace_level: minimal
+  metrics: [tokens, latency]
+security:
+  filesystem: none
+  network: allowlist
+  secrets: [GITHUB_TOKEN]
+negotiation:
+  file_conflicts: yield
+  priority: 1
+when_to_use:
+  triggers:
+    - when a human-readable PR summary is needed before deeper analysis

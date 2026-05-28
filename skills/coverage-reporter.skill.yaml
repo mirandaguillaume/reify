@@ -1,0 +1,26 @@
+skill: coverage-reporter
+version: "1.0.0"
+context:
+  consumes: [file_tree, source_code]
+  produces: [coverage_report]
+  memory: short-term
+strategy:
+  tools: [bash, read_file]
+  approach: test-first
+  effort: light
+  steps:
+    - detect test framework from package.json
+    - run test suite with coverage flag
+    - parse coverage output into structured report
+guardrails:
+  - timeout: 10min
+observability:
+  trace_level: standard
+  metrics: [tokens, duration]
+security:
+  filesystem: full
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 2

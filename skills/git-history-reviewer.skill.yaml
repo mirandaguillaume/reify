@@ -1,0 +1,36 @@
+skill: git-history-reviewer
+version: "1.0.0"
+context:
+  consumes: [pr_diff, git_blame]
+  produces: [review_issues]
+  memory: short-term
+strategy:
+  tools: [bash, read_file]
+  approach: history-first
+  effort: medium
+  steps:
+    - read git blame for modified files
+    - analyze commit history of modified code sections
+    - identify bugs in light of historical context
+    - flag regressions or patterns that previously caused issues
+guardrails:
+  - timeout: 5min
+  - max_history_depth: 20
+observability:
+  trace_level: standard
+  metrics: [tokens, commits_analyzed, issue_count]
+security:
+  filesystem: read-only
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 2
+when_to_use:
+  triggers:
+    - when modified code has meaningful git history
+  dont_use:
+    - for brand new files with no history
+anti_patterns:
+  - excuse: "Flagging pre-existing issues"
+    reality: "Only flag issues introduced or worsened by this PR"

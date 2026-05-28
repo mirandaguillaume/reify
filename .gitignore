@@ -1,0 +1,43 @@
+# Go binaries
+/reify
+/cmd/reify/reify
+*.test
+*.out
+
+# Local environment
+.envrc
+.envrc.local
+.env
+.env.*
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artefacts
+dist/
+build/
+
+# Coverage
+coverage.txt
+coverage.html
+profile.out
+
+# LLM cache
+.reify/cache/
+
+# Generated outputs from local testing
+/.claude/skills/
+/.claude/agents/
+/.claude/CLAUDE.md
+/.github/skills/
+/.github/agents/
+/.github/copilot-instructions.md
+/.cursor/rules/
+/.cursorrules

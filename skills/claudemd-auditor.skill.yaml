@@ -1,0 +1,38 @@
+skill: claudemd-auditor
+version: "1.0.0"
+context:
+  consumes: [pr_diff, claudemd_files]
+  produces: [review_issues]
+  memory: short-term
+strategy:
+  tools: [read_file, grep, search]
+  approach: compliance-check
+  effort: medium
+  steps:
+    - extract actionable rules from CLAUDE.md files
+    - read the PR diff
+    - check each change against applicable CLAUDE.md rules
+    - for each violation, cite the specific CLAUDE.md rule
+guardrails:
+  - timeout: 5min
+  - require_citation
+observability:
+  trace_level: standard
+  metrics: [tokens, issue_count]
+security:
+  filesystem: read-only
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 2
+when_to_use:
+  triggers:
+    - when CLAUDE.md files exist and compliance must be checked
+  dont_use:
+    - when no CLAUDE.md files were found
+anti_patterns:
+  - excuse: "Flagging non-applicable CLAUDE.md rules"
+    reality: "CLAUDE.md is guidance for writing code; not all rules apply during review"
+  - excuse: "Flagging explicitly silenced issues"
+    reality: "Lint ignore comments and similar silencers are intentional"

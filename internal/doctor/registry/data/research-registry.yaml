@@ -1,0 +1,246 @@
+version: "2026.03.2"
+latest_version: "2026.03.2"
+update_url: "https://raw.githubusercontent.com/mirandaguillaume/reify/main/internal/doctor/registry/data/research-registry.yaml"
+# AUDIT NOTE: All citations verified 2026-03-31. Authors, titles, findings, and URLs
+# checked against actual paper content. Previous version (2026.03.1) contained
+# fabricated author names, wrong paper titles, and unsupported findings.
+recommendations:
+  - id: guardrails
+    title: "Add guardrails section"
+    citation: "Liu et al., 2024"
+    paper: "Lost in the Middle: How Language Models Use Long Contexts"
+    url: "https://arxiv.org/abs/2307.03172"
+    finding: "LLMs retrieve information better from the beginning and end of context than from the middle (primacy/recency effect in long contexts)"
+    confidence: moderate
+    detection_prompt: "Are there explicit behavioral constraints (timeouts, output limits, prohibitions)?"
+    suggestion_prompt: "Add a guardrails section at the top with timeout, output limits, and behavioral boundaries."
+
+  - id: security
+    title: "Add security declarations"
+    citation: "Chatlatanagulchai et al., 2025"
+    paper: "Agent READMEs: An Empirical Study of Context Files for Agentic Coding"
+    url: "https://arxiv.org/abs/2511.12884"
+    finding: "Only 14.5% of agent files address security — filesystem, network, and secrets access"
+    confidence: high
+    detection_prompt: "Are there explicit security declarations covering filesystem access, network access, and secrets handling?"
+    suggestion_prompt: "Add a security section declaring filesystem scope, network permissions, and secrets access boundaries."
+
+  - id: ordering
+    title: "Fix instruction ordering for primacy bias"
+    citation: "Liu et al., 2024"
+    paper: "Lost in the Middle: How Language Models Use Long Contexts"
+    url: "https://arxiv.org/abs/2307.03172"
+    finding: "LLMs retain start and end of context better than the middle — place critical information first or last"
+    confidence: moderate
+    detection_prompt: "Are the most critical instructions (guardrails, identity, core behavior) placed at the beginning of the file?"
+    suggestion_prompt: "Move critical instructions (guardrails, identity, constraints) to the top of the file to exploit primacy bias."
+
+  - id: decomposition
+    title: "Decompose into focused skills"
+    citation: "Li et al., 2026"
+    paper: "SkillsBench: Benchmarking How Well Agent Skills Work Across Diverse Tasks"
+    url: "https://arxiv.org/abs/2602.12670"
+    finding: "2-3 focused skills yield +18.6pp improvement over no skills; comprehensive single-document Skills hurt performance (-2.9pp)"
+    confidence: high
+    detection_prompt: "Is this agent definition trying to do too many distinct things in a single file?"
+    suggestion_prompt: "Decompose this agent into 2-3 focused skill definitions, each with a single responsibility."
+
+  - id: context
+    title: "Add codebase context references"
+    citation: "Suri et al., 2026"
+    paper: "CodeScout: Contextual Problem Statement Enhancement for Software Agents"
+    url: "https://arxiv.org/abs/2603.05744"
+    finding: "Pre-compiled structured codebase context gives +20% task resolution improvement on SWE-bench Verified"
+    confidence: high
+    detection_prompt: "Does the agent reference specific project files, directories, patterns, or conventions from the codebase?"
+    suggestion_prompt: "Add references to key project files, directory structure, and codebase conventions the agent needs."
+
+  - id: redundancy
+    title: "Remove redundant context"
+    citation: "Gloaguen et al., 2026"
+    paper: "Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents?"
+    url: "https://arxiv.org/abs/2602.11988"
+    finding: "Context files increase token cost by over 20% and lead agents to explore more code without improving task resolution"
+    confidence: high
+    detection_prompt: "Are there instructions that repeat what the model can already infer from the codebase (tech stack, obvious conventions, standard patterns)?"
+    suggestion_prompt: "Remove instructions that duplicate information already inferable from project files (package.json, go.mod, existing code patterns)."
+
+  - id: tool_usage
+    title: "Align tool declarations with instructions"
+    citation: "Chatlatanagulchai et al., 2025"
+    paper: "Agent READMEs: An Empirical Study of Context Files for Agentic Coding"
+    url: "https://arxiv.org/abs/2511.12884"
+    finding: "34.8% of agent files mention tools and resources — misaligned declarations between frontmatter and instructions waste context"
+    confidence: moderate
+    detection_prompt: "Are tools declared in frontmatter but never referenced in instructions, or are instructions referencing tools not declared?"
+    suggestion_prompt: "Ensure every declared tool is referenced in instructions, and every referenced tool is declared."
+
+  - id: specificity
+    title: "Replace vague instructions with specific criteria"
+    citation: "GitHub, 2026"
+    paper: "How to Write a Great agents.md: Lessons from Over 2,500 Repositories"
+    url: "https://github.blog/ai-and-ml/github-copilot/how-to-write-a-great-agents-md-lessons-from-over-2500-repositories/"
+    finding: "Specific instructions with executable commands outperform vague directives — 'You are a helpful assistant' fails, detailed operating manuals work"
+    confidence: moderate
+    detection_prompt: "Are there vague instructions like 'be thorough', 'write good code', or 'follow best practices' without specific criteria?"
+    suggestion_prompt: "Replace vague directives with specific, measurable criteria and executable commands."
+
+  - id: testing
+    title: "Add testing and validation steps"
+    citation: "GitHub, 2026"
+    paper: "How to Write a Great agents.md: Lessons from Over 2,500 Repositories"
+    url: "https://github.blog/ai-and-ml/github-copilot/how-to-write-a-great-agents-md-lessons-from-over-2500-repositories/"
+    finding: "Best agent files include specific test commands (npm test, pytest -v) with flags and options — effective agents validate their work"
+    confidence: moderate
+    detection_prompt: "Does the agent workflow include testing, validation, or verification steps?"
+    suggestion_prompt: "Add explicit testing and validation steps to the agent workflow."
+
+  - id: examples
+    title: "Add concrete examples"
+    citation: "GitHub, 2026"
+    paper: "How to Write a Great agents.md: Lessons from Over 2,500 Repositories"
+    url: "https://github.blog/ai-and-ml/github-copilot/how-to-write-a-great-agents-md-lessons-from-over-2500-repositories/"
+    finding: "Best agent files include concrete code examples and detailed operating manuals — examples clarify intent better than abstract rules"
+    confidence: moderate
+    detection_prompt: "Does the agent file include concrete examples or few-shot demonstrations of expected behavior?"
+    suggestion_prompt: "Add 1-2 concrete examples showing expected input/output or behavior patterns."
+
+  - id: error_handling
+    title: "Define error recovery behavior"
+    citation: "Wong et al., 2025"
+    paper: "Confucius Code Agent: Scalable Agent Scaffolding for Real-World Codebases"
+    url: "https://arxiv.org/abs/2512.10398"
+    finding: "Agent scaffolding with persistent note-taking and structured error recovery improves reliability on real-world codebases"
+    confidence: moderate
+    detection_prompt: "Does the agent define fallback behavior, error recovery steps, or edge case handling?"
+    suggestion_prompt: "Add error handling instructions: what to do on failure, how to recover, and which edge cases to watch for."
+
+  - id: scope
+    title: "Reduce scope to fewer responsibilities"
+    citation: "Li et al., 2026"
+    paper: "SkillsBench: Benchmarking How Well Agent Skills Work Across Diverse Tasks"
+    url: "https://arxiv.org/abs/2602.12670"
+    finding: "Performance drops sharply with 4+ skills (+5.9pp) vs 2-3 skills (+18.6pp) — 2-3 is the optimal composition size"
+    confidence: high
+    detection_prompt: "Does the agent have more than 5 distinct responsibilities or areas of concern?"
+    suggestion_prompt: "Reduce to 2-3 core responsibilities. Split remaining concerns into separate skill files."
+
+  - id: memory_management
+    title: "Define context and memory strategy"
+    citation: "Vasilopoulos, 2026"
+    paper: "Codified Context: Infrastructure for AI Agents in a Complex Codebase"
+    url: "https://arxiv.org/abs/2602.20478"
+    finding: "Multi-tier context infrastructure (hot-memory constitution, specialized domain agents, cold-memory knowledge base) reduces errors in a 108K-line codebase"
+    confidence: moderate
+    detection_prompt: "Does the agent define how it manages conversation context, session memory, or persistent state?"
+    suggestion_prompt: "Add memory strategy: short-term (current task only), conversation (session context), or long-term (persistent across sessions)."
+
+  - id: output_format
+    title: "Specify output format explicitly"
+    citation: "Galster et al., 2026"
+    paper: "Configuring Agentic AI Coding Tools: An Exploratory Study"
+    url: "https://arxiv.org/abs/2602.14690"
+    finding: "No established content structure for agent configuration exists — explicit format definitions reduce ambiguity and improve consistency"
+    confidence: moderate
+    detection_prompt: "Does the agent specify the expected output format (JSON, markdown, structured text) with a clear schema or template?"
+    suggestion_prompt: "Define the exact output format the agent should produce — include a template or schema example."
+
+  - id: decision_authority
+    title: "Define decision boundaries"
+    citation: "Google Cloud, 2025"
+    paper: "AI Grew Up and Got a Job: Lessons from 2025 on Agents and Trust"
+    url: "https://cloud.google.com/transform/ai-grew-up-and-got-a-job-lessons-from-2025-on-agents-and-trust"
+    finding: "Trust in AI agents requires clear boundaries on acceptable output, guardrails that block risky actions, and human oversight for critical decisions"
+    confidence: moderate
+    detection_prompt: "Does the agent define what it can decide autonomously vs what requires human approval or escalation?"
+    suggestion_prompt: "Add explicit decision boundaries: what the agent can do alone, what needs confirmation, and when to escalate."
+
+  - id: build_commands
+    title: "Include specific build/run/test commands"
+    citation: "Chatlatanagulchai et al., 2025"
+    paper: "Agent READMEs: An Empirical Study of Context Files for Agentic Coding"
+    url: "https://arxiv.org/abs/2511.12884"
+    finding: "62.3% of agent files include build and run commands — non-standard workflows must be explicit"
+    confidence: moderate
+    detection_prompt: "Does the agent reference specific build, run, test, or deployment commands for this project?"
+    suggestion_prompt: "Add project-specific commands: how to build, run tests, deploy, and any non-standard workflows (e.g., 'run make gen before testing')."
+
+  - id: architecture_hints
+    title: "Reference system architecture"
+    citation: "Chatlatanagulchai et al., 2025"
+    paper: "Agent READMEs: An Empirical Study of Context Files for Agentic Coding"
+    url: "https://arxiv.org/abs/2511.12884"
+    finding: "67.7% of agent files describe system architecture — architectural context is the most common content category"
+    confidence: moderate
+    detection_prompt: "Does the agent reference the system architecture (layers, patterns, data flow, key abstractions)?"
+    suggestion_prompt: "Add architecture references: key layers, design patterns, data flow, and important abstractions the agent should respect."
+
+  - id: prompt_injection
+    title: "Add prompt injection protection"
+    citation: "Beurer-Kellner et al., 2025"
+    paper: "Design Patterns for Securing LLM Agents against Prompt Injections"
+    url: "https://arxiv.org/abs/2506.08837"
+    finding: "Design patterns provide provable resistance to prompt injection — agents processing untrusted data must separate privileged from quarantined contexts"
+    confidence: high
+    detection_prompt: "Does the agent process untrusted user data or external content? If so, are there safeguards against prompt injection?"
+    suggestion_prompt: "Add prompt injection safeguards: separate data processing from instruction following, validate external inputs, limit tool access when processing untrusted content."
+
+  - id: idempotency
+    title: "Ensure re-executability"
+    citation: "Galster et al., 2026"
+    paper: "Configuring Agentic AI Coding Tools: An Exploratory Study"
+    url: "https://arxiv.org/abs/2602.14690"
+    finding: "Controlled studies are needed to determine whether richer configuration yields measurable improvements — idempotent operations prevent cascading failures during iterative agent runs"
+    confidence: low
+    detection_prompt: "Can this agent be re-run on the same input without producing unwanted side effects or duplicate actions?"
+    suggestion_prompt: "Ensure the agent is idempotent: re-running on the same input should produce the same result without duplicating actions or creating side effects."
+
+  - id: context_tiering
+    title: "Structure context by priority"
+    citation: "Vasilopoulos, 2026"
+    paper: "Codified Context: Infrastructure for AI Agents in a Complex Codebase"
+    url: "https://arxiv.org/abs/2602.20478"
+    finding: "Multi-tier context (hot-memory always loaded, specialized agents per domain, cold-memory knowledge base on demand) reduces need for in-prompt explanation"
+    confidence: moderate
+    detection_prompt: "Is all context at the same priority level, or is critical context distinguished from supplementary context?"
+    suggestion_prompt: "Structure context by priority: put critical instructions first (always loaded), task-specific context next (per invocation), and reference docs last (on demand)."
+
+  - id: output_constraints
+    title: "Set output size and scope limits"
+    citation: "Gloaguen et al., 2026"
+    paper: "Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents?"
+    url: "https://arxiv.org/abs/2602.11988"
+    finding: "Context files increase token cost by over 20% — constraining output scope and generation length reduces waste without degrading quality"
+    confidence: moderate
+    detection_prompt: "Are there explicit constraints on output size, number of items, or scope of changes the agent can make?"
+    suggestion_prompt: "Add output constraints: max number of items (e.g., max 15 review comments), max file changes, or output length limits."
+
+  - id: workflow_triggers
+    title: "Define when this agent should be invoked"
+    citation: "Chatlatanagulchai et al., 2025"
+    paper: "Agent READMEs: An Empirical Study of Context Files for Agentic Coding"
+    url: "https://arxiv.org/abs/2511.12884"
+    finding: "24.4% of agent files define AI integration instructions — most lack clear invocation conditions"
+    confidence: moderate
+    detection_prompt: "Does the agent define when it should be invoked, what triggers it, and when it should NOT be used?"
+    suggestion_prompt: "Add invocation triggers: when to use this agent, what conditions activate it, and explicit exclusions (when NOT to use it)."
+
+  - id: dependency_declaration
+    title: "Declare data dependencies explicitly"
+    citation: "Bhardwaj, 2026"
+    paper: "Agent Behavioral Contracts: Formal Specification and Runtime Enforcement for Reliable Autonomous AI Agents"
+    url: "https://arxiv.org/abs/2602.22302"
+    finding: "Formal behavioral contracts (Preconditions, Invariants, Governance, Recovery) enable safe composition verification in multi-agent chains"
+    confidence: high
+    detection_prompt: "Does the agent declare what data it needs as input and what it produces as output?"
+    suggestion_prompt: "Add explicit data dependency declarations: what this agent consumes (inputs) and what it produces (outputs). This enables composition with other agents."
+
+  - id: version_drift
+    title: "Check for stale references"
+    citation: "Chatlatanagulchai et al., 2025"
+    paper: "Agent READMEs: An Empirical Study of Context Files for Agentic Coding"
+    url: "https://arxiv.org/abs/2511.12884"
+    finding: "67.4% of Claude Code agent files are modified multiple times — files that reference specific code patterns can become stale as the codebase evolves"
+    confidence: moderate
+    detection_prompt: "Does the agent reference specific files, functions, patterns, or conventions that may have changed since the file was written?"
+    suggestion_prompt: "Review all specific references (file paths, function names, patterns) and update any that no longer match the current codebase."

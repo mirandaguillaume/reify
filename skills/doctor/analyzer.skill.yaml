@@ -1,0 +1,31 @@
+skill: analyzer
+version: "1.0.0"
+context:
+  consumes: [agent_file, detected_format]
+  produces: [analysis_results]
+  memory: short-term
+strategy:
+  approach: llm
+  tools: [read_file]
+  effort: heavy
+  steps:
+    - load agent file content with format-specific parsing from detected_format
+    - run LLM evaluation against the research registry (12 quality categories)
+    - extract structured findings with category, severity, description for each issue
+guardrails:
+  - timeout: 120s
+  - max_tokens: 8192
+observability:
+  trace_level: detailed
+  metrics: [tokens, finding_count, latency]
+security:
+  filesystem: read-only
+  network: allowlist
+negotiation:
+  file_conflicts: yield
+  priority: 2
+when_to_use:
+  triggers:
+    - when agent file content requires LLM-powered quality evaluation
+  dont_use:
+    - for format detection or codebase context gathering

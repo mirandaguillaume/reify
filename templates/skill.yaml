@@ -1,0 +1,42 @@
+skill: my-skill
+version: "0.1.0"
+
+context:
+  consumes: []
+  produces: [output]
+  memory: short-term
+
+strategy:
+  tools: []
+  approach: sequential
+  effort: medium
+  steps: []
+
+guardrails: []
+
+observability:
+  trace_level: minimal
+  metrics: []
+
+security:
+  filesystem: none
+  network: none
+  secrets: []
+
+negotiation:
+  file_conflicts: yield
+  priority: 0
+
+# when_to_use:
+#   triggers: []
+#   dont_use: []
+#   especially: []
+
+# anti_patterns: []
+# - excuse: "Quick fix for now"
+#   reality: "First fix sets the pattern. Do it right."
+
+# examples: []
+# - label: "Good: explicit verification"
+#   code: "git diff --stat && go test ./..."
+#   lang: bash

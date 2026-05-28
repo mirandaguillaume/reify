@@ -1,0 +1,24 @@
+agent: code-reviewer
+description: "Multi-stage PR review: eligibility → discovery → 4 parallel analysis agents → confidence scoring → comment"
+consumes: [pr_url, pr_diff, git_diff]
+produces: [review_comment]
+stages:
+  - name: preflight
+    strategy: sequential
+    skills: [pr-eligibility-checker]
+
+  - name: discovery
+    strategy: parallel
+    skills: [pr-summarizer, source-fetcher]
+
+  - name: analysis
+    strategy: parallel
+    skills: [bug-scanner, git-history-reviewer, pr-history-reviewer, code-comment-auditor]
+
+  - name: scoring
+    strategy: sequential
+    skills: [issue-confidence-scorer]
+
+  - name: publish
+    strategy: sequential
+    skills: [pr-commenter]

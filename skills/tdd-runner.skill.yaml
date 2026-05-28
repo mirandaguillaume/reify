@@ -1,0 +1,29 @@
+skill: tdd-runner
+version: "1.0.0"
+context:
+  consumes: [file_tree, source_code]
+  produces: [test_results]
+  memory: short-term
+strategy:
+  tools: [bash, read_file, grep]
+  approach: test-first
+  effort: medium
+  steps:
+    - detect test framework from package.json
+    - run test suite
+    - parse test output for failures
+    - summarize results with pass/fail counts
+guardrails:
+  - timeout: 10min
+  - max_retries: 2
+  - fail_fast_on_syntax_error
+observability:
+  trace_level: detailed
+  metrics: [tokens, duration, test_count]
+security:
+  filesystem: full
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 2

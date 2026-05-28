@@ -1,0 +1,6 @@
+agent: ci-reviewer
+skills: [bug-scanner, ts-linter, type-checker, review-commenter, risk-scorer]
+orchestration: sequential
+description: "Forensic diff scan + static analysis, then writes specific line-level review comments and scores risk"
+consumes: [git_diff, file_tree, source_code]
+produces: [review_comments, risk_score]

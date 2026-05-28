@@ -1,0 +1,26 @@
+skill: ts-linter
+version: "1.0.0"
+context:
+  consumes: [file_tree, source_code]
+  produces: [lint_results]
+  memory: short-term
+strategy:
+  tools: [bash, read_file, search]
+  approach: static-analysis
+  effort: light
+  steps:
+    - check for common anti-patterns
+    - produce structured lint report
+guardrails:
+  - timeout: 5min
+  - max_file_size: 500KB
+observability:
+  trace_level: standard
+  metrics: [tokens, error_count]
+security:
+  filesystem: read-only
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 1

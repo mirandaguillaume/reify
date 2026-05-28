@@ -1,0 +1,37 @@
+skill: pr-eligibility-checker
+version: "1.0.0"
+context:
+  consumes: [pr_url]
+  produces: [eligibility_status]
+  memory: short-term
+strategy:
+  tools: [bash]
+  approach: gate-check
+  effort: light
+  steps:
+    - fetch PR metadata via gh
+    - check if PR is closed, draft, automated, or already reviewed
+    - return eligibility status with reason
+guardrails:
+  - timeout: 1min
+  - fail_closed
+observability:
+  trace_level: minimal
+  metrics: [tokens, latency]
+security:
+  filesystem: none
+  network: allowlist
+  secrets: [GITHUB_TOKEN]
+negotiation:
+  file_conflicts: yield
+  priority: 1
+when_to_use:
+  triggers:
+    - before any automated code review
+    - when a PR URL is provided for review
+  dont_use:
+    - for manual reviews without a PR
+    - for local-only code review
+anti_patterns:
+  - excuse: "Skipping eligibility check"
+    reality: "Reviewing closed/draft/automated PRs wastes tokens and creates noise"

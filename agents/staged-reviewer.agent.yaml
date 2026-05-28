@@ -1,0 +1,14 @@
+agent: staged-reviewer
+description: "Multi-stage code review pipeline with preflight, analysis, and publish stages"
+consumes: [git_diff, file_tree, source_code]
+produces: [review_comments, risk_score]
+stages:
+  - name: preflight
+    strategy: sequential
+    skills: [pr-triage]
+  - name: analysis
+    strategy: parallel
+    skills: [bug-scanner, git-history-reviewer]
+  - name: publish
+    strategy: sequential
+    skills: [pr-commenter]

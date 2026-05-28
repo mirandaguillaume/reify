@@ -1,0 +1,33 @@
+skill: review-commenter
+version: "2.0.0"
+context:
+  consumes: [git_diff, review_issues, lint_results, type_errors, source_code]
+  produces: [review_comments]
+  memory: conversation
+strategy:
+  tools: [read_file, grep, search]
+  approach: diff-first
+  effort: heavy
+  steps:
+    - read review_issues — these are confirmed bugs from static analysis; include every one verbatim
+    - read lint_results and type_errors if non-empty — add any issues not already in review_issues
+    - re-read the git diff — look for issues missed by upstream skills using the same forensic checklist
+    - "for each issue: write a comment with file path, line number, exact code quote, explanation of why it is wrong, and a concrete fix"
+    - do not write generic advice — every comment must reference a specific line in the diff
+    - do not praise the code or summarise the PR — output review comments only
+guardrails:
+  - max_comments: 20
+  - timeout: 5min
+  - no_approve_without_tests
+  - "no_generic_advice: every comment must cite file:line and quote the offending code"
+  - "no_summary: do not summarise what the PR does — only flag problems"
+observability:
+  trace_level: detailed
+  metrics: [tokens, latency, comment_count]
+security:
+  filesystem: read-only
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 3

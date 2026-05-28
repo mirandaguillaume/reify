@@ -1,0 +1,31 @@
+skill: format-detector
+version: "1.0.0"
+context:
+  consumes: [agent_file]
+  produces: [detected_format]
+  memory: short-term
+strategy:
+  approach: code
+  tools: [read_file]
+  effort: light
+  steps:
+    - inspect file extension for format hints (.md for claude/copilot, .yaml for reify)
+    - read file frontmatter for structural markers (YAML headers, skill/agent keys)
+    - classify format as one of claude | copilot | reify based on structural evidence
+guardrails:
+  - timeout: 5s
+  - max_file_size: 1MB
+observability:
+  trace_level: standard
+  metrics: [tokens, format_type]
+security:
+  filesystem: read-only
+  network: none
+negotiation:
+  file_conflicts: yield
+  priority: 1
+when_to_use:
+  triggers:
+    - when an agent file is provided for doctor analysis
+  dont_use:
+    - when the file format is already known to the caller

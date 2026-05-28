@@ -1,0 +1,33 @@
+skill: source-fetcher
+version: "1.0.0"
+context:
+  consumes: [pr_diff, pr_url]
+  produces: [source_code]
+  memory: short-term
+strategy:
+  tools: [bash, read_file]
+  approach: file-discovery
+  effort: medium
+  steps:
+    - parse pr_diff to extract the list of changed file paths from diff --git headers
+    - "for each changed file: fetch the full current file content via gh api using the PR head ref"
+    - skip deleted files (only removal lines, no additions)
+    - "concatenate all file contents separated by '=== FILE: <path> ===' headers"
+    - emit the result as source_code
+guardrails:
+  - timeout: 2min
+  - max_files: 20
+  - "skip_binary_files: skip png, jpg, gif, woff, ttf, pdf, zip, tar, gz"
+observability:
+  trace_level: standard
+  metrics: [tokens, file_count]
+security:
+  filesystem: read-only
+  network: allowlist
+  secrets: [GITHUB_TOKEN]
+negotiation:
+  file_conflicts: yield
+  priority: 1
+when_to_use:
+  triggers:
+    - when downstream analysis skills need full file context beyond the diff hunks

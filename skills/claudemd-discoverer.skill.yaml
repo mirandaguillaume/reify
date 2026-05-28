@@ -1,0 +1,33 @@
+skill: claudemd-discoverer
+version: "1.0.0"
+context:
+  consumes: [pr_diff, file_tree]
+  produces: [claudemd_files]
+  memory: short-term
+strategy:
+  tools: [bash, read_file, glob]
+  approach: file-discovery
+  effort: light
+  steps:
+    - find root CLAUDE.md if it exists
+    - identify directories modified by the PR diff
+    - find CLAUDE.md files in those directories
+    - return list of file paths with contents
+guardrails:
+  - timeout: 1min
+  - max_depth: 5
+observability:
+  trace_level: minimal
+  metrics: [tokens, files_found]
+security:
+  filesystem: read-only
+  network: none
+  secrets: []
+negotiation:
+  file_conflicts: yield
+  priority: 1
+when_to_use:
+  triggers:
+    - when code review needs project-specific rules
+  dont_use:
+    - when reviewing without CLAUDE.md compliance
