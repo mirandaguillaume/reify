@@ -10,6 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// resultOf constructs a classifier.Result manually so checker tests don't
+// depend on a classifier implementation. Item facet defaults to context
+// unless caller passes one.
+func resultOf(items ...classifier.Item) classifier.Result {
+	return classifier.Result{Items: items}
+}
+
 func TestCheck_EmptyInputReturnsEmptyResult(t *testing.T) {
 	r := checker.Check("", "", nil, classifier.Result{})
 	assert.Empty(t, r.Instructions)
@@ -19,7 +26,7 @@ func TestCheck_EmptyInputReturnsEmptyResult(t *testing.T) {
 
 func TestCheck_DefaultsToAllHarnessesWhenTargetsEmpty(t *testing.T) {
 	content := "## Commands\n- Use tabs for indent"
-	cls := classifier.Classify(content, "")
+	cls := resultOf(classifier.Item{Text: "Use tabs for indent", Facet: classifier.FacetStrategy, Section: "Commands"})
 	r := checker.Check(content, "", nil, cls)
 	require.Len(t, r.Instructions, 1)
 
@@ -31,7 +38,7 @@ func TestCheck_DefaultsToAllHarnessesWhenTargetsEmpty(t *testing.T) {
 
 func TestCheck_PopulatesAllInstructionFields(t *testing.T) {
 	content := "## Guardrails\n- Never commit secrets"
-	cls := classifier.Classify(content, "")
+	cls := resultOf(classifier.Item{Text: "Never commit secrets", Facet: classifier.FacetGuardrails, Section: "Guardrails"})
 	r := checker.Check(content, "", []string{"copilot"}, cls)
 	require.Len(t, r.Instructions, 1)
 
@@ -47,13 +54,15 @@ func TestCheck_PopulatesAllInstructionFields(t *testing.T) {
 }
 
 func TestCheck_OverallTracksWorstRisk(t *testing.T) {
-	// Build a file with both a clean instruction and a risky one.
 	content := strings.Repeat("filler line\n", 20) +
 		"## Guardrails\n" +
-		"- Never write unclear code\n" + // negative + semantic + middle → high
+		"- Never write unclear code\n" +
 		"## Stack\n" +
 		"- Go 1.22\n"
-	cls := classifier.Classify(content, "")
+	cls := resultOf(
+		classifier.Item{Text: "Never write unclear code", Facet: classifier.FacetGuardrails, Section: "Guardrails"},
+		classifier.Item{Text: "Go 1.22", Facet: classifier.FacetContext, Section: "Stack"},
+	)
 	r := checker.Check(content, "", []string{"copilot"}, cls)
 
 	require.NotEmpty(t, r.Instructions)
@@ -62,19 +71,20 @@ func TestCheck_OverallTracksWorstRisk(t *testing.T) {
 }
 
 func TestCheck_HighRiskCount(t *testing.T) {
-	// Two negative middle-of-file guardrails → both high on copilot.
 	content := strings.Repeat("x\n", 10) +
 		"## Guardrails\n" +
 		"- Never do X\n" +
 		"- Never do Y\n" +
 		strings.Repeat("x\n", 10)
-	cls := classifier.Classify(content, "")
+	cls := resultOf(
+		classifier.Item{Text: "Never do X", Facet: classifier.FacetGuardrails, Section: "Guardrails"},
+		classifier.Item{Text: "Never do Y", Facet: classifier.FacetGuardrails, Section: "Guardrails"},
+	)
 	r := checker.Check(content, "", []string{"copilot"}, cls)
 	assert.Equal(t, 2, r.HighRiskCount["copilot"])
 }
 
 func TestCheck_PositionEstimation(t *testing.T) {
-	// Instruction near the top should yield a low Position; near the bottom, high.
 	lines := []string{"## Top"}
 	lines = append(lines, "- Top instruction")
 	for i := 0; i < 50; i++ {
@@ -84,7 +94,10 @@ func TestCheck_PositionEstimation(t *testing.T) {
 	lines = append(lines, "- Bottom instruction")
 	content := strings.Join(lines, "\n")
 
-	cls := classifier.Classify(content, "")
+	cls := resultOf(
+		classifier.Item{Text: "Top instruction", Facet: classifier.FacetContext, Section: "Top"},
+		classifier.Item{Text: "Bottom instruction", Facet: classifier.FacetContext, Section: "Bottom"},
+	)
 	r := checker.Check(content, "", []string{"claude-code"}, cls)
 	require.Len(t, r.Instructions, 2)
 
@@ -93,6 +106,5 @@ func TestCheck_PositionEstimation(t *testing.T) {
 }
 
 func TestCheck_HarnessesConstantStable(t *testing.T) {
-	// Locks in the public harness set — if you add/remove one, update the consumers.
 	assert.Equal(t, []string{"claude-code", "copilot", "cursor"}, checker.Harnesses)
 }

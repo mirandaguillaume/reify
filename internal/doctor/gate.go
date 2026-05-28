@@ -9,10 +9,10 @@ import (
 
 // GateCondition defines a single quality gate condition.
 type GateCondition struct {
-	Metric   string  `yaml:"metric" json:"metric"`
-	Operator string  `yaml:"operator" json:"operator"`
+	Metric    string  `yaml:"metric" json:"metric"`
+	Operator  string  `yaml:"operator" json:"operator"`
 	Threshold float64 `yaml:"threshold" json:"threshold"`
-	Blocking bool    `yaml:"blocking" json:"blocking"`
+	Blocking  bool    `yaml:"blocking" json:"blocking"`
 }
 
 // QualityGate holds conditions that must be satisfied for the gate to pass.
@@ -28,33 +28,23 @@ type GateResult struct {
 }
 
 // DefaultGate returns the built-in quality gate conditions.
+// Note: secret-scanning and structural-presence conditions were dropped along
+// with the static check infrastructure; the gate is now LLM-finding-centric.
 func DefaultGate() *QualityGate {
 	return &QualityGate{
 		Conditions: []GateCondition{
-			{Metric: "secrets_found", Operator: "==", Threshold: 0, Blocking: true},
-			{Metric: "structural_pct", Operator: ">=", Threshold: 50, Blocking: true},
 			{Metric: "high_findings", Operator: "<=", Threshold: 5, Blocking: false},
 		},
 	}
 }
 
-// isSecretFinding returns true if the finding represents a detected secret.
-// Centralized here so gate evaluation (gate.go) and structural scoring
-// (render.go ComputeStructural) stay in sync. Heuristic: security category +
-// Issue text contains "detected". Story 4-0 AC #3.
-func isSecretFinding(f llmutil.Finding) bool {
-	return strings.EqualFold(f.Category, "security") && strings.Contains(strings.ToLower(f.Issue), "detected")
-}
-
-// Evaluate checks all conditions against the report metrics.
+// Evaluate checks all conditions against finding-derived metrics.
 // Gate passes iff ALL blocking conditions pass.
 //
-// An empty Conditions slice does NOT silently pass — it produces a warning
-// so the user knows the gate configuration is empty. A silent pass on an
-// empty gate is dangerous because it implies "all checks satisfied" when in
-// reality no checks ran. Story 4-0 AC #4.
-func (g *QualityGate) Evaluate(structural StructuralResult, findings []llmutil.Finding) GateResult {
-	metrics := computeMetrics(structural, findings)
+// An empty Conditions slice produces a warning rather than silently passing —
+// "all checks satisfied" must not imply "no checks ran".
+func (g *QualityGate) Evaluate(findings []llmutil.Finding) GateResult {
+	metrics := computeMetrics(findings)
 	result := GateResult{Pass: true}
 
 	if len(g.Conditions) == 0 {
@@ -85,13 +75,9 @@ func (g *QualityGate) Evaluate(structural StructuralResult, findings []llmutil.F
 	return result
 }
 
-func computeMetrics(structural StructuralResult, findings []llmutil.Finding) map[string]float64 {
-	secretsFound := 0
+func computeMetrics(findings []llmutil.Finding) map[string]float64 {
 	highFindings := 0
 	for _, f := range findings {
-		if isSecretFinding(f) {
-			secretsFound++
-		}
 		sev := f.Severity
 		if sev == "" {
 			sev = f.Confidence
@@ -101,14 +87,7 @@ func computeMetrics(structural StructuralResult, findings []llmutil.Finding) map
 		}
 	}
 
-	pct := float64(0)
-	if structural.Total > 0 {
-		pct = float64(structural.Passed) * 100 / float64(structural.Total)
-	}
-
 	return map[string]float64{
-		"secrets_found":  float64(secretsFound),
-		"structural_pct": pct,
 		"high_findings":  float64(highFindings),
 		"total_findings": float64(len(findings)),
 	}
@@ -129,6 +108,6 @@ func evalCondition(value float64, operator string, threshold float64) bool {
 	case "<":
 		return value < threshold
 	default:
-		return false // unknown operator — fail-closed for safety
+		return false
 	}
 }

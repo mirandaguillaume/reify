@@ -47,15 +47,13 @@ func TestClassifyLLM_AppliesLLMFacets(t *testing.T) {
 	assert.Equal(t, 1, fp.calls)
 }
 
-func TestClassifyLLM_FallsBackOnInvalidJSON(t *testing.T) {
+func TestClassifyLLM_ErrorOnInvalidJSON(t *testing.T) {
 	content := `## Commands
 - An instruction`
 	fp := &fakeProvider{response: "this is not JSON at all"}
-	r, err := ClassifyLLM(content, "", fp)
-	require.NoError(t, err, "invalid JSON should fall back, not error")
-	require.Len(t, r.Items, 1)
-	// Static fallback picks the section facet (Commands → strategy).
-	assert.Equal(t, FacetStrategy, r.Items[0].Facet)
+	_, err := ClassifyLLM(content, "", fp)
+	require.Error(t, err, "invalid JSON must surface an error — no silent static fallback")
+	assert.Contains(t, err.Error(), "parse LLM classification response")
 }
 
 func TestClassifyLLM_PropagatesProviderError(t *testing.T) {
@@ -100,17 +98,17 @@ func TestClassifyLLM_HandlesThinkBlocks(t *testing.T) {
 	assert.Equal(t, FacetStrategy, r.Items[0].Facet)
 }
 
-func TestClassifyLLM_MissingIndexFallsBackToStatic(t *testing.T) {
+func TestClassifyLLM_MissingIndexDefaultsToContext(t *testing.T) {
 	content := `## Commands
 - alpha
 - beta`
-	// LLM only classifies item 1; item 2 should retain its static facet.
+	// LLM only classifies item 1; item 2 has no LLM answer.
 	fp := &fakeProvider{response: `[{"i": 1, "facet": "guardrails"}]`}
 	r, err := ClassifyLLM(content, "", fp)
 	require.NoError(t, err)
 	require.Len(t, r.Items, 2)
 	assert.Equal(t, FacetGuardrails, r.Items[0].Facet)
-	assert.Equal(t, FacetStrategy, r.Items[1].Facet, "missing LLM index should fall back to static section facet")
+	assert.Equal(t, FacetContext, r.Items[1].Facet, "omitted index defaults to context — no static fallback")
 }
 
 func TestNormalizeFacet(t *testing.T) {
