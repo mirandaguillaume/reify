@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -49,16 +50,66 @@ See docs/calibration/rubric.md for the canonical facet definitions.`,
 }
 
 // calibrateItem is the JSONL row format used across sample/judge/score.
+// Multi-label per rubric v1.1: every label field is a set of facets, not
+// a single facet. UnmarshalJSON accepts the v1 single-string form for
+// backward compatibility and promotes it to a singleton list.
 type calibrateItem struct {
-	ID         string `json:"id"`
-	Text       string `json:"text"`
-	Section    string `json:"section,omitempty"`
-	SourceFile string `json:"source_file"`
-	SourceRepo string `json:"source_repo"`
-	LLMLabel   string `json:"llm_label"`
-	GoldLabel  string `json:"gold_label,omitempty"`
-	JudgeLabel string `json:"judge_label,omitempty"`
-	Notes      string `json:"notes,omitempty"`
+	ID          string   `json:"id"`
+	Text        string   `json:"text"`
+	Section     string   `json:"section,omitempty"`
+	SourceFile  string   `json:"source_file"`
+	SourceRepo  string   `json:"source_repo"`
+	LLMLabels   []string `json:"llm_labels,omitempty"`
+	GoldLabels  []string `json:"gold_labels,omitempty"`
+	JudgeLabels []string `json:"judge_labels,omitempty"`
+	Notes       string   `json:"notes,omitempty"`
+}
+
+// UnmarshalJSON accepts both v1 (singular string fields) and v1.1
+// (plural list fields) for label columns. Items written before the
+// multi-label refactor stay readable; new writes always use the
+// plural form.
+func (it *calibrateItem) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		ID          string   `json:"id"`
+		Text        string   `json:"text"`
+		Section     string   `json:"section,omitempty"`
+		SourceFile  string   `json:"source_file"`
+		SourceRepo  string   `json:"source_repo"`
+		LLMLabel    string   `json:"llm_label,omitempty"`
+		LLMLabels   []string `json:"llm_labels,omitempty"`
+		GoldLabel   string   `json:"gold_label,omitempty"`
+		GoldLabels  []string `json:"gold_labels,omitempty"`
+		JudgeLabel  string   `json:"judge_label,omitempty"`
+		JudgeLabels []string `json:"judge_labels,omitempty"`
+		Notes       string   `json:"notes,omitempty"`
+	}
+	var r raw
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	it.ID = r.ID
+	it.Text = r.Text
+	it.Section = r.Section
+	it.SourceFile = r.SourceFile
+	it.SourceRepo = r.SourceRepo
+	it.Notes = r.Notes
+	it.LLMLabels = chooseLabels(r.LLMLabels, r.LLMLabel)
+	it.GoldLabels = chooseLabels(r.GoldLabels, r.GoldLabel)
+	it.JudgeLabels = chooseLabels(r.JudgeLabels, r.JudgeLabel)
+	return nil
+}
+
+// chooseLabels prefers a populated plural field; falls back to promoting
+// the v1 singular field to a singleton list when the plural is empty.
+func chooseLabels(plural []string, singular string) []string {
+	if len(plural) > 0 {
+		return plural
+	}
+	if singular != "" {
+		return []string{singular}
+	}
+	return nil
 }
 
 // ---------- sample ----------
@@ -117,7 +168,13 @@ func runSample(sourceDir string, perFacet int, output string, seed int64) error 
 			continue
 		}
 		for _, it := range items {
-			f := classifier.Facet(it.LLMLabel)
+			// classify.log items are single-label by construction (Reify
+			// classify emits each item under a single facet); promote into
+			// our multi-label representation.
+			if len(it.LLMLabels) == 0 {
+				continue
+			}
+			f := classifier.Facet(it.LLMLabels[0])
 			byFacet[f] = append(byFacet[f], it)
 		}
 	}
@@ -146,14 +203,18 @@ func runSample(sourceDir string, perFacet int, output string, seed int64) error 
 	}
 
 	for i := range sampled {
-		sampled[i].ID = fmt.Sprintf("%s-%04d", sampled[i].LLMLabel, i+1)
+		first := "x"
+		if len(sampled[i].LLMLabels) > 0 {
+			first = sampled[i].LLMLabels[0]
+		}
+		sampled[i].ID = fmt.Sprintf("%s-%04d", first, i+1)
 	}
 
 	if err := writeJSONL(output, sampled); err != nil {
 		return fmt.Errorf("write %s: %w", output, err)
 	}
 	fmt.Printf("\nWrote %d items to %s\n", len(sampled), output)
-	fmt.Println(color.New(color.Faint).Sprint("Next: fill gold_label in each row, then `reify-calibrate judge` / `reify-calibrate score`."))
+	fmt.Println(color.New(color.Faint).Sprint("Next: fill gold_labels (JSON array) in each row, then `reify-calibrate judge` / `reify-calibrate score`."))
 	return nil
 }
 
@@ -199,7 +260,7 @@ func loadClassifyLog(path, sourceRoot string) ([]calibrateItem, error) {
 					Section:    it.Section,
 					SourceFile: entry.File,
 					SourceRepo: repo,
-					LLMLabel:   facet,
+					LLMLabels:  []string{facet},
 				})
 			}
 		}
@@ -288,23 +349,24 @@ func runJudge(input, output, providerFlag, modelFlag string, concurrency int, fo
 
 	var pending []int
 	for i, it := range items {
-		if it.JudgeLabel != "" && !force {
+		if len(it.JudgeLabels) > 0 && !force {
 			continue
 		}
 		pending = append(pending, i)
 	}
 	if len(pending) == 0 {
-		fmt.Println(color.YellowString("All items already have judge_label. Use --force to re-judge."))
+		fmt.Println(color.YellowString("All items already have judge_labels. Use --force to re-judge."))
 		return nil
 	}
 
 	fmt.Printf("Judging %d / %d items (concurrency=%d)\n\n", len(pending), len(items), concurrency)
 
 	var (
-		mu        sync.Mutex
-		done      int
-		errors    int
-		agreeWith int
+		mu             sync.Mutex
+		done           int
+		errors         int
+		jaccardSum     float64
+		jaccardCounted int
 	)
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -316,7 +378,7 @@ func runJudge(input, output, providerFlag, modelFlag string, concurrency int, fo
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			label, jerr := judgeOne(provider, header, items[i])
+			labels, jerr := judgeOne(provider, header, items[i])
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -326,13 +388,14 @@ func runJudge(input, output, providerFlag, modelFlag string, concurrency int, fo
 				fmt.Fprintf(os.Stderr, "  [%d/%d] %s: error: %v\n", done, len(pending), items[i].ID, jerr)
 				return
 			}
-			items[i].JudgeLabel = label
-			if label == items[i].LLMLabel {
-				agreeWith++
+			items[i].JudgeLabels = labels
+			if len(items[i].LLMLabels) > 0 {
+				jaccardSum += jaccard(labels, items[i].LLMLabels)
+				jaccardCounted++
 			}
 			if done%20 == 0 || done == len(pending) {
-				rate := float64(agreeWith) * 100 / float64(done-errors)
-				fmt.Fprintf(os.Stderr, "  progress %d/%d  errors=%d  judge↔llm agree=%.1f%%\n",
+				rate := jaccardSum * 100 / float64(jaccardCounted)
+				fmt.Fprintf(os.Stderr, "  progress %d/%d  errors=%d  mean Jaccard(judge,llm)=%.1f%%\n",
 					done, len(pending), errors, rate)
 			}
 		}(idx)
@@ -345,13 +408,14 @@ func runJudge(input, output, providerFlag, modelFlag string, concurrency int, fo
 
 	fmt.Println()
 	if errors > 0 {
-		fmt.Println(color.YellowString("Done with %d errors (left judge_label empty for those).", errors))
+		fmt.Println(color.YellowString("Done with %d errors (left judge_labels empty for those).", errors))
 	} else {
 		fmt.Println(color.GreenString("Done."))
 	}
-	if done > errors {
-		rate := float64(agreeWith) * 100 / float64(done-errors)
-		fmt.Printf("Judge ↔ existing llm_label agreement: %.1f%% (%d / %d)\n", rate, agreeWith, done-errors)
+	if jaccardCounted > 0 {
+		rate := jaccardSum * 100 / float64(jaccardCounted)
+		fmt.Printf("Mean Jaccard(judge_labels, llm_labels): %.1f%% over %d items with both populated\n",
+			rate, jaccardCounted)
 	}
 	fmt.Printf("Wrote %s\n", output)
 	return nil
@@ -394,44 +458,57 @@ func firstNonEmpty(vals ...string) string {
 // judgePromptHeader is the rubric-grounded preamble shared across calls.
 // Per-item content is appended at call time. Kept compact so it fits in a
 // single Anthropic prompt-cache breakpoint if caching is added later.
+//
+// v1.1 (multi-label): the judge is asked to emit every facet that
+// applies, space-separated. Rubric v1's tie-breakers were removed because
+// they force the judge to drop a true facet when two apply.
 func judgePromptHeader() string {
-	return `You are a strict annotator applying the Reify facet rubric (v1).
+	return `You are a strict annotator applying the Reify facet rubric (v1.1).
 
-Five facets, exactly one per item:
+Five facets — an item may belong to ONE OR MORE:
 
 - context: background knowledge the agent needs. Stateless facts about
   the project — tech stack, architecture, layout, conventions, the
   agent's own role. NOT how to do anything.
 - strategy: how to approach a task. Imperatives, workflows, commands to
   run, decision procedures, style rules phrased as "do X" or "use Y".
-- guardrails: things the agent must NOT do — negative-framed prohibitions
-  whose breach is a code smell or rule violation but NOT a security event.
+- guardrails: things the agent must NOT do — negative-framed prohibitions.
 - observability: what to log, monitor, surface, report. Visibility of the
   agent's behaviour and the system's behaviour.
 - security: permissions, secrets, access control, network/filesystem
   boundaries, data classification. A rule whose breach is a security
-  event (leak, escalation, unauthorized action) belongs here even if
-  phrased as a prohibition.
+  event (leak, escalation, unauthorized action) belongs here.
 
-Tie-breakers, in order:
-1. If breaking the rule causes a security event -> security.
-2. Negative-framed and not a security event -> guardrails (not strategy).
-3. "Log X" -> observability even if context-flavoured.
-4. Telling the agent what to do beats telling it what is true -> strategy.
+Multi-label guidance:
 
-There is no "other" or "general". Force a choice.
+- "Never commit .env files" -> guardrails AND security
+- "Log every API call without including PII" -> observability AND security
+- "Use bcrypt for password hashing" -> context AND security (often;
+  context alone if the line is purely descriptive)
 
-Output: exactly one lowercase word — one of:
-context, strategy, guardrails, observability, security.
+Pick every facet that genuinely applies. Do NOT pick more than necessary
+(no facet appears reflexively because of related keywords).
 
-No explanation, no punctuation, no quotes.
+There is no "other" or "general". An item that fits none of the five is
+not a valid item — answer with the single most defensible facet rather
+than emitting nothing.
+
+Output: facet names that apply, lowercase, space-separated, no
+punctuation, no quotes, no explanation.
+
+Examples of valid outputs:
+  guardrails
+  guardrails security
+  observability
+  strategy security
+  context
 
 ---
 
 `
 }
 
-func judgeOne(provider llm.Provider, header string, it calibrateItem) (string, error) {
+func judgeOne(provider llm.Provider, header string, it calibrateItem) ([]string, error) {
 	var b strings.Builder
 	b.WriteString(header)
 	b.WriteString("Item to classify:\n\n")
@@ -445,31 +522,62 @@ func judgeOne(provider llm.Provider, header string, it calibrateItem) (string, e
 	if it.SourceRepo != "" {
 		fmt.Fprintf(&b, "Source repo: %s\n", it.SourceRepo)
 	}
-	b.WriteString("\nYour answer (one lowercase word):\n")
+	b.WriteString("\nYour answer (space-separated facet names):\n")
 
 	resp, err := provider.Complete(b.String())
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	label := normalizeJudgeAnswer(resp)
-	if !isValidFacet(label) {
-		return "", fmt.Errorf("unrecognised judge label %q (raw: %q)", label, strings.TrimSpace(resp))
+	labels := parseJudgeAnswer(resp)
+	if len(labels) == 0 {
+		return nil, fmt.Errorf("no valid facet in judge response (raw: %q)", strings.TrimSpace(resp))
 	}
-	return label, nil
+	return labels, nil
 }
 
-func normalizeJudgeAnswer(s string) string {
+// parseJudgeAnswer extracts the set of valid facet labels from a judge
+// response. Tolerant of common LLM noise: leading "Facet:" prefixes, code
+// fences, quotes, comma or newline separators. Returns the labels in their
+// first-seen order, deduplicated.
+func parseJudgeAnswer(s string) []string {
 	s = strings.TrimSpace(s)
-	for _, prefix := range []string{"facet:", "label:", "answer:"} {
-		if strings.HasPrefix(strings.ToLower(s), prefix) {
+	// Strip a leading prefix like "Facet:" or "Labels:".
+	lower := strings.ToLower(s)
+	for _, prefix := range []string{"facets:", "facet:", "labels:", "label:", "answer:"} {
+		if strings.HasPrefix(lower, prefix) {
 			s = strings.TrimSpace(s[len(prefix):])
+			lower = strings.ToLower(s)
 		}
 	}
+	// Trim code-fence and quote noise around the whole string.
 	s = strings.Trim(s, "`'\"")
-	if i := strings.IndexAny(s, " \n\t."); i > 0 {
-		s = s[:i]
+
+	// Tokenize on whitespace, commas, semicolons, and slashes.
+	tokens := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', ',', ';', '/', '\r':
+			return true
+		}
+		return false
+	})
+
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range tokens {
+		t = strings.Trim(t, "`'\".")
+		if t == "" {
+			continue
+		}
+		if !isValidFacet(t) {
+			continue // ignore unrecognised tokens rather than failing the whole answer
+		}
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
 	}
-	return strings.ToLower(strings.TrimSpace(s))
+	return out
 }
 
 func isValidFacet(s string) bool {
@@ -481,7 +589,7 @@ func isValidFacet(s string) bool {
 	return false
 }
 
-// ---------- score ----------
+// ---------- score (multi-label) ----------
 
 func scoreCmd() *cobra.Command {
 	var input string
@@ -489,29 +597,37 @@ func scoreCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "score",
-		Short: "Compute precision/recall/F1, confusion matrix and Cohen's kappa vs gold labels",
+		Short: "Compute multi-label per-facet metrics, set-level metrics, and taxonomy diagnostics",
 		Long: `score reads a labelled calibration corpus (JSONL) and reports calibration
-metrics for every available prediction column against gold_label.
+metrics under the v1.1 multi-label rubric.
 
-Items without gold_label are skipped. Items with invalid (non-facet) labels
-are flagged as errors. The metrics computed per (prediction, gold) pair:
+For every prediction column that overlaps with gold_labels:
+  - per-facet binary precision, recall, F1, support (each facet is a
+    separate binary classification problem)
+  - macro-F1 (unweighted mean across facets present in the gold)
+  - micro-F1 (computed on aggregate TP/FP/FN)
+  - exact-match accuracy (predicted set == gold set)
+  - mean Jaccard (|G ∩ P| / |G ∪ P|, 1.0 = perfect)
+  - mean Hamming loss (fraction of facets wrong per item, 0.0 = perfect)
+  - macro Cohen's kappa, treating each facet as an independent
+    binary annotation problem
 
-  - precision, recall, F1 per facet
-  - macro-F1 (unweighted mean across facets)
-  - accuracy (overall agreement)
-  - confusion matrix (rows = gold, columns = predicted)
-  - Cohen's kappa with the standard Landis & Koch (1977) interpretation
+When both llm_labels and judge_labels are present, also reports their
+pairwise set-membership agreement on items without gold.
 
-When both llm_label and judge_label are present, also reports their pairwise
-agreement (judge ↔ llm) which is informative even on items lacking gold.
+Taxonomy diagnostics (computed on gold_labels alone):
+  - cardinality histogram: how many items have 1, 2, 3, ... facets?
+  - co-occurrence matrix: count of items where {f_i, f_j} ⊆ gold
+  - singleton rate per facet: how often does each facet appear alone?
+  - PMI per pair: pointwise mutual information; high values flag
+    facet pairs that occur together more than chance would predict
 
-Use --format json for a machine-readable dump suitable for a CI gate.`,
+Use --format json for a machine-readable dump.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runScore(input, format)
 		},
 	}
-
-	cmd.Flags().StringVarP(&input, "input", "i", "", "input JSONL corpus with gold_label filled (required)")
+	cmd.Flags().StringVarP(&input, "input", "i", "", "input JSONL corpus with gold_labels filled (required)")
 	cmd.Flags().StringVarP(&format, "format", "f", "text", "output format: text or json")
 	_ = cmd.MarkFlagRequired("input")
 	return cmd
@@ -523,54 +639,49 @@ func runScore(input, format string) error {
 		return fmt.Errorf("read %s: %w", input, err)
 	}
 
-	var golded []calibrateItem
-	var invalid []string
-	for _, it := range items {
-		if it.GoldLabel == "" {
-			continue
-		}
-		if !isValidFacet(it.GoldLabel) {
-			invalid = append(invalid, fmt.Sprintf("%s: gold_label=%q", it.ID, it.GoldLabel))
-			continue
-		}
-		golded = append(golded, it)
-	}
-
 	report := &scoreReport{
 		Input:         input,
 		TotalItems:    len(items),
-		ScoredItems:   len(golded),
-		InvalidGolds:  invalid,
 		LabelsPresent: map[string]int{},
 	}
+	var golded []calibrateItem
 	for _, it := range items {
-		if it.LLMLabel != "" {
+		if len(it.LLMLabels) > 0 {
 			report.LabelsPresent["llm"]++
 		}
-		if it.JudgeLabel != "" {
+		if len(it.JudgeLabels) > 0 {
 			report.LabelsPresent["judge"]++
 		}
-	}
-
-	// Per-comparison metrics: any label column that's populated and has a
-	// gold counterpart on the same item.
-	if any := anyLabel(golded, func(it calibrateItem) string { return it.LLMLabel }); any {
-		report.LLMvsGold = computeComparison(golded, func(it calibrateItem) string { return it.LLMLabel })
-	}
-	if any := anyLabel(golded, func(it calibrateItem) string { return it.JudgeLabel }); any {
-		report.JudgeVsGold = computeComparison(golded, func(it calibrateItem) string { return it.JudgeLabel })
-	}
-
-	// Judge vs LLM agreement does not require gold_label.
-	if anyLabel(items, func(it calibrateItem) string { return it.LLMLabel }) &&
-		anyLabel(items, func(it calibrateItem) string { return it.JudgeLabel }) {
-		pairs := pairedItems(items, func(it calibrateItem) string { return it.LLMLabel },
-			func(it calibrateItem) string { return it.JudgeLabel })
-		report.JudgeVsLLM = &interAnnotator{
-			N:          len(pairs),
-			Agreement:  agreementRate(pairs),
-			CohensKapp: cohenKappa(pairs),
+		if len(it.GoldLabels) == 0 {
+			continue
 		}
+		valid, invalid := splitValid(it.GoldLabels)
+		if len(invalid) > 0 {
+			report.InvalidGolds = append(report.InvalidGolds,
+				fmt.Sprintf("%s: invalid facet(s) %v in gold_labels", it.ID, invalid))
+			continue
+		}
+		it.GoldLabels = valid
+		golded = append(golded, it)
+	}
+	report.ScoredItems = len(golded)
+
+	if len(golded) > 0 {
+		if anyLabelSet(golded, func(it calibrateItem) []string { return it.LLMLabels }) {
+			report.LLMvsGold = computeMulti(golded, func(it calibrateItem) []string { return it.LLMLabels })
+		}
+		if anyLabelSet(golded, func(it calibrateItem) []string { return it.JudgeLabels }) {
+			report.JudgeVsGold = computeMulti(golded, func(it calibrateItem) []string { return it.JudgeLabels })
+		}
+		report.Taxonomy = computeTaxonomy(golded)
+	}
+
+	// Judge vs LLM agreement does not require gold.
+	if anyLabelSet(items, func(it calibrateItem) []string { return it.LLMLabels }) &&
+		anyLabelSet(items, func(it calibrateItem) []string { return it.JudgeLabels }) {
+		report.JudgeVsLLM = computePairAgreement(items,
+			func(it calibrateItem) []string { return it.LLMLabels },
+			func(it calibrateItem) []string { return it.JudgeLabels })
 	}
 
 	if format == "json" {
@@ -585,8 +696,7 @@ func runScore(input, format string) error {
 	return nil
 }
 
-// scoreReport is the top-level result for --format json. Empty fields are
-// omitted so a corpus without judge labels doesn't produce noisy nulls.
+// scoreReport is the top-level result for --format json.
 type scoreReport struct {
 	Input         string         `json:"input"`
 	TotalItems    int            `json:"total_items"`
@@ -594,18 +704,22 @@ type scoreReport struct {
 	LabelsPresent map[string]int `json:"labels_present"`
 	InvalidGolds  []string       `json:"invalid_golds,omitempty"`
 
-	LLMvsGold   *comparison     `json:"llm_vs_gold,omitempty"`
-	JudgeVsGold *comparison     `json:"judge_vs_gold,omitempty"`
-	JudgeVsLLM  *interAnnotator `json:"judge_vs_llm,omitempty"`
+	LLMvsGold   *multiComparison `json:"llm_vs_gold,omitempty"`
+	JudgeVsGold *multiComparison `json:"judge_vs_gold,omitempty"`
+	JudgeVsLLM  *pairAgreement   `json:"judge_vs_llm,omitempty"`
+
+	Taxonomy *taxonomyReport `json:"taxonomy,omitempty"`
 }
 
-type comparison struct {
-	N         int                                                 `json:"n"`
-	PerFacet  map[classifier.Facet]facetMetrics                   `json:"per_facet"`
-	MacroF1   float64                                             `json:"macro_f1"`
-	Accuracy  float64                                             `json:"accuracy"`
-	Confusion map[classifier.Facet]map[classifier.Facet]int       `json:"confusion"`
-	Kappa     float64                                             `json:"cohens_kappa"`
+type multiComparison struct {
+	N            int                               `json:"n"`
+	PerFacet     map[classifier.Facet]facetMetrics `json:"per_facet"`
+	MacroF1      float64                           `json:"macro_f1"`
+	MicroF1      float64                           `json:"micro_f1"`
+	ExactMatch   float64                           `json:"exact_match"`
+	MeanJaccard  float64                           `json:"mean_jaccard"`
+	MeanHamming  float64                           `json:"mean_hamming_loss"`
+	MacroKappa   float64                           `json:"macro_kappa"`
 }
 
 type facetMetrics struct {
@@ -613,170 +727,345 @@ type facetMetrics struct {
 	Recall    float64 `json:"recall"`
 	F1        float64 `json:"f1"`
 	Support   int     `json:"support"`
-	TP, FP, FN int    `json:"-"`
+	Kappa     float64 `json:"kappa"`
+	TP        int     `json:"tp"`
+	FP        int     `json:"fp"`
+	FN        int     `json:"fn"`
+	TN        int     `json:"tn"`
 }
 
-type interAnnotator struct {
-	N          int     `json:"n"`
-	Agreement  float64 `json:"agreement"`
-	CohensKapp float64 `json:"cohens_kappa"`
+type pairAgreement struct {
+	N           int     `json:"n"`
+	ExactMatch  float64 `json:"exact_match"`
+	MeanJaccard float64 `json:"mean_jaccard"`
 }
 
-// pair is a single (predicted, gold) tuple used during metric calculation.
-type pair struct{ a, b string }
+type taxonomyReport struct {
+	N             int                                                    `json:"n"`
+	Cardinality   map[int]int                                            `json:"cardinality"`
+	SingletonRate map[classifier.Facet]float64                           `json:"singleton_rate"`
+	Cooccurrence  map[classifier.Facet]map[classifier.Facet]int          `json:"cooccurrence"`
+	PMI           map[classifier.Facet]map[classifier.Facet]float64      `json:"pmi"`
+}
 
-func anyLabel(items []calibrateItem, get func(calibrateItem) string) bool {
+// ---------- score helpers ----------
+
+func anyLabelSet(items []calibrateItem, get func(calibrateItem) []string) bool {
 	for _, it := range items {
-		if get(it) != "" {
+		if len(get(it)) > 0 {
 			return true
 		}
 	}
 	return false
 }
 
-// pairedItems collects (A, B) tuples where both extractors return a non-empty,
-// valid facet for the item. Items missing either label are dropped so the
-// resulting metrics speak only to overlap.
-func pairedItems(items []calibrateItem, a, b func(calibrateItem) string) []pair {
-	var out []pair
-	for _, it := range items {
-		va, vb := a(it), b(it)
-		if va == "" || vb == "" {
-			continue
+// splitValid partitions a label slice into known and unknown facets.
+func splitValid(labels []string) (valid []string, invalid []string) {
+	for _, l := range labels {
+		if isValidFacet(l) {
+			valid = append(valid, l)
+		} else {
+			invalid = append(invalid, l)
 		}
-		if !isValidFacet(va) || !isValidFacet(vb) {
-			continue
+	}
+	return valid, invalid
+}
+
+// asSet converts a slice to a presence map keyed by facet, dropping
+// unknown labels. The boolean is the membership marker.
+func asSet(labels []string) map[classifier.Facet]bool {
+	out := map[classifier.Facet]bool{}
+	for _, l := range labels {
+		if isValidFacet(l) {
+			out[classifier.Facet(l)] = true
 		}
-		out = append(out, pair{va, vb})
 	}
 	return out
 }
 
-func computeComparison(golded []calibrateItem, predict func(calibrateItem) string) *comparison {
-	pairs := pairedItems(golded, predict, func(it calibrateItem) string { return it.GoldLabel })
-	if len(pairs) == 0 {
+func jaccard(a, b []string) float64 {
+	sa := asSet(a)
+	sb := asSet(b)
+	if len(sa) == 0 && len(sb) == 0 {
+		return 1.0
+	}
+	inter := 0
+	for f := range sa {
+		if sb[f] {
+			inter++
+		}
+	}
+	union := len(sa) + len(sb) - inter
+	if union == 0 {
+		return 1.0
+	}
+	return float64(inter) / float64(union)
+}
+
+func hammingLoss(pred, gold []string) float64 {
+	sp := asSet(pred)
+	sg := asSet(gold)
+	wrong := 0
+	for _, f := range classifier.AllFacets {
+		if sp[f] != sg[f] {
+			wrong++
+		}
+	}
+	return float64(wrong) / float64(len(classifier.AllFacets))
+}
+
+func computeMulti(golded []calibrateItem, predict func(calibrateItem) []string) *multiComparison {
+	type itemSets struct{ pred, gold map[classifier.Facet]bool }
+	var sets []itemSets
+	for _, it := range golded {
+		preds := predict(it)
+		if len(preds) == 0 {
+			continue
+		}
+		sets = append(sets, itemSets{pred: asSet(preds), gold: asSet(it.GoldLabels)})
+	}
+	if len(sets) == 0 {
 		return nil
 	}
 
-	confusion := make(map[classifier.Facet]map[classifier.Facet]int)
-	for _, f := range classifier.AllFacets {
-		confusion[f] = make(map[classifier.Facet]int)
-		for _, g := range classifier.AllFacets {
-			confusion[f][g] = 0
+	tp := map[classifier.Facet]int{}
+	fp := map[classifier.Facet]int{}
+	fn := map[classifier.Facet]int{}
+	tn := map[classifier.Facet]int{}
+	for _, s := range sets {
+		for _, f := range classifier.AllFacets {
+			gp, gg := s.pred[f], s.gold[f]
+			switch {
+			case gp && gg:
+				tp[f]++
+			case gp && !gg:
+				fp[f]++
+			case !gp && gg:
+				fn[f]++
+			default:
+				tn[f]++
+			}
 		}
 	}
 
-	// pair.a = predicted, pair.b = gold.
-	correct := 0
-	for _, p := range pairs {
-		pred := classifier.Facet(p.a)
-		gold := classifier.Facet(p.b)
-		confusion[gold][pred]++
-		if pred == gold {
-			correct++
-		}
-	}
-
-	perFacet := make(map[classifier.Facet]facetMetrics)
-	macroSum := 0.0
-	macroCount := 0
+	perFacet := map[classifier.Facet]facetMetrics{}
+	var macroF1Sum float64
+	var macroKSum float64
+	var macroCount int
+	totalTP, totalFP, totalFN := 0, 0, 0
 	for _, f := range classifier.AllFacets {
-		tp := confusion[f][f]
-		fn := 0
-		for _, g := range classifier.AllFacets {
-			if g != f {
-				fn += confusion[f][g]
-			}
-		}
-		fp := 0
-		for _, g := range classifier.AllFacets {
-			if g != f {
-				fp += confusion[g][f]
-			}
-		}
-		support := tp + fn
+		support := tp[f] + fn[f]
+		precision := safeDiv(tp[f], tp[f]+fp[f])
+		recall := safeDiv(tp[f], tp[f]+fn[f])
+		f1 := harmonic(precision, recall)
+		k := kappaForBinary(tp[f], fp[f], fn[f], tn[f])
 
-		var precision, recall, f1 float64
-		if tp+fp > 0 {
-			precision = float64(tp) / float64(tp+fp)
-		}
-		if tp+fn > 0 {
-			recall = float64(tp) / float64(tp+fn)
-		}
-		if precision+recall > 0 {
-			f1 = 2 * precision * recall / (precision + recall)
-		}
 		perFacet[f] = facetMetrics{
-			Precision: precision, Recall: recall, F1: f1, Support: support,
-			TP: tp, FP: fp, FN: fn,
+			Precision: precision, Recall: recall, F1: f1, Support: support, Kappa: k,
+			TP: tp[f], FP: fp[f], FN: fn[f], TN: tn[f],
 		}
+		totalTP += tp[f]
+		totalFP += fp[f]
+		totalFN += fn[f]
 		if support > 0 {
-			macroSum += f1
+			macroF1Sum += f1
+			macroKSum += k
 			macroCount++
 		}
 	}
 
-	var macroF1 float64
-	if macroCount > 0 {
-		macroF1 = macroSum / float64(macroCount)
+	microP := safeDiv(totalTP, totalTP+totalFP)
+	microR := safeDiv(totalTP, totalTP+totalFN)
+	microF1 := harmonic(microP, microR)
+
+	exactCount := 0
+	jaccardSum := 0.0
+	hammingSum := 0.0
+	for _, s := range sets {
+		if setsEqual(s.pred, s.gold) {
+			exactCount++
+		}
+		jaccardSum += jaccardSets(s.pred, s.gold)
+		hammingSum += hammingSets(s.pred, s.gold)
 	}
 
-	return &comparison{
-		N:         len(pairs),
-		PerFacet:  perFacet,
-		MacroF1:   macroF1,
-		Accuracy:  float64(correct) / float64(len(pairs)),
-		Confusion: confusion,
-		Kappa:     cohenKappa(pairs),
+	return &multiComparison{
+		N:           len(sets),
+		PerFacet:    perFacet,
+		MacroF1:     ifPositive(macroCount, macroF1Sum/float64(macroCount)),
+		MicroF1:     microF1,
+		ExactMatch:  float64(exactCount) / float64(len(sets)),
+		MeanJaccard: jaccardSum / float64(len(sets)),
+		MeanHamming: hammingSum / float64(len(sets)),
+		MacroKappa:  ifPositive(macroCount, macroKSum/float64(macroCount)),
 	}
 }
 
-// cohenKappa returns Cohen's kappa for two annotators on the same N items.
-// Treats the labels in pair.a as annotator A and pair.b as annotator B.
-// Returns 0 when expected agreement equals observed agreement (κ is
-// undefined for p_e=1 which we approximate by saturating to 1.0).
-func cohenKappa(pairs []pair) float64 {
-	n := len(pairs)
+func computePairAgreement(items []calibrateItem, a, b func(calibrateItem) []string) *pairAgreement {
+	var n int
+	exact := 0
+	jaccardSum := 0.0
+	for _, it := range items {
+		la, lb := a(it), b(it)
+		if len(la) == 0 || len(lb) == 0 {
+			continue
+		}
+		sa, sb := asSet(la), asSet(lb)
+		if setsEqual(sa, sb) {
+			exact++
+		}
+		jaccardSum += jaccardSets(sa, sb)
+		n++
+	}
+	if n == 0 {
+		return nil
+	}
+	return &pairAgreement{
+		N:           n,
+		ExactMatch:  float64(exact) / float64(n),
+		MeanJaccard: jaccardSum / float64(n),
+	}
+}
+
+func computeTaxonomy(golded []calibrateItem) *taxonomyReport {
+	n := len(golded)
+	if n == 0 {
+		return nil
+	}
+	cardinality := map[int]int{}
+	facetCount := map[classifier.Facet]int{}
+	singletonCount := map[classifier.Facet]int{}
+	cooc := map[classifier.Facet]map[classifier.Facet]int{}
+	for _, f := range classifier.AllFacets {
+		cooc[f] = map[classifier.Facet]int{}
+	}
+	for _, it := range golded {
+		set := asSet(it.GoldLabels)
+		cardinality[len(set)]++
+		for f := range set {
+			facetCount[f]++
+			if len(set) == 1 {
+				singletonCount[f]++
+			}
+		}
+		// Co-occurrence (unordered pairs, also self-counts on diagonal).
+		for f1 := range set {
+			for f2 := range set {
+				cooc[f1][f2]++
+			}
+		}
+	}
+
+	singletonRate := map[classifier.Facet]float64{}
+	for _, f := range classifier.AllFacets {
+		singletonRate[f] = safeDiv(singletonCount[f], facetCount[f])
+	}
+
+	pmi := map[classifier.Facet]map[classifier.Facet]float64{}
+	N := float64(n)
+	for _, f1 := range classifier.AllFacets {
+		pmi[f1] = map[classifier.Facet]float64{}
+		for _, f2 := range classifier.AllFacets {
+			joint := float64(cooc[f1][f2]) / N
+			pf1 := float64(facetCount[f1]) / N
+			pf2 := float64(facetCount[f2]) / N
+			if joint == 0 || pf1 == 0 || pf2 == 0 {
+				pmi[f1][f2] = 0
+				continue
+			}
+			pmi[f1][f2] = math.Log2(joint / (pf1 * pf2))
+		}
+	}
+
+	return &taxonomyReport{
+		N:             n,
+		Cardinality:   cardinality,
+		SingletonRate: singletonRate,
+		Cooccurrence:  cooc,
+		PMI:           pmi,
+	}
+}
+
+// ---------- math helpers ----------
+
+func safeDiv(num, den int) float64 {
+	if den == 0 {
+		return 0
+	}
+	return float64(num) / float64(den)
+}
+
+func harmonic(p, r float64) float64 {
+	if p+r == 0 {
+		return 0
+	}
+	return 2 * p * r / (p + r)
+}
+
+func ifPositive(count int, val float64) float64 {
+	if count == 0 {
+		return 0
+	}
+	return val
+}
+
+func setsEqual(a, b map[classifier.Facet]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+func jaccardSets(a, b map[classifier.Facet]bool) float64 {
+	if len(a) == 0 && len(b) == 0 {
+		return 1.0
+	}
+	inter := 0
+	for k := range a {
+		if b[k] {
+			inter++
+		}
+	}
+	union := len(a) + len(b) - inter
+	if union == 0 {
+		return 1.0
+	}
+	return float64(inter) / float64(union)
+}
+
+func hammingSets(pred, gold map[classifier.Facet]bool) float64 {
+	wrong := 0
+	for _, f := range classifier.AllFacets {
+		if pred[f] != gold[f] {
+			wrong++
+		}
+	}
+	return float64(wrong) / float64(len(classifier.AllFacets))
+}
+
+// kappaForBinary returns Cohen's kappa for a 2x2 contingency table of a
+// single facet membership decision. Saturates to 1.0 when expected
+// agreement equals 1 (all items have the same label on both sides).
+func kappaForBinary(tp, fp, fn, tn int) float64 {
+	n := float64(tp + fp + fn + tn)
 	if n == 0 {
 		return 0
 	}
-	agree := 0
-	marginA := map[string]float64{}
-	marginB := map[string]float64{}
-	for _, p := range pairs {
-		if p.a == p.b {
-			agree++
-		}
-		marginA[p.a]++
-		marginB[p.b]++
-	}
-	po := float64(agree) / float64(n)
-	pe := 0.0
-	N := float64(n)
-	for k, v := range marginA {
-		pe += (v / N) * (marginB[k] / N)
-	}
+	po := float64(tp+tn) / n
+	pa := float64(tp+fp) / n
+	pb := float64(tp+fn) / n
+	pe := pa*pb + (1-pa)*(1-pb)
 	if pe >= 1.0 {
 		return 1.0
 	}
 	return (po - pe) / (1.0 - pe)
 }
 
-func agreementRate(pairs []pair) float64 {
-	if len(pairs) == 0 {
-		return 0
-	}
-	agree := 0
-	for _, p := range pairs {
-		if p.a == p.b {
-			agree++
-		}
-	}
-	return float64(agree) / float64(len(pairs))
-}
-
-// kappaInterpretation maps a kappa value to the Landis & Koch (1977) label
-// commonly used in inter-annotator agreement literature.
 func kappaInterpretation(k float64) string {
 	switch {
 	case k < 0:
@@ -794,21 +1083,23 @@ func kappaInterpretation(k float64) string {
 	}
 }
 
+// ---------- render ----------
+
 func renderScoreText(r *scoreReport) {
 	bold := color.New(color.Bold).SprintFunc()
 	faint := color.New(color.Faint).SprintFunc()
 
 	fmt.Printf("%s %s\n", bold("Corpus:"), r.Input)
-	fmt.Printf("  total items     : %d\n", r.TotalItems)
-	fmt.Printf("  with gold_label : %d\n", r.ScoredItems)
-	if c, ok := r.LabelsPresent["llm"]; ok {
-		fmt.Printf("  with llm_label  : %d\n", c)
+	fmt.Printf("  total items        : %d\n", r.TotalItems)
+	fmt.Printf("  with gold_labels   : %d\n", r.ScoredItems)
+	if c := r.LabelsPresent["llm"]; c > 0 {
+		fmt.Printf("  with llm_labels    : %d\n", c)
 	}
-	if c, ok := r.LabelsPresent["judge"]; ok {
-		fmt.Printf("  with judge_label: %d\n", c)
+	if c := r.LabelsPresent["judge"]; c > 0 {
+		fmt.Printf("  with judge_labels  : %d\n", c)
 	}
 	if len(r.InvalidGolds) > 0 {
-		fmt.Println(color.YellowString("  invalid gold labels:"))
+		fmt.Println(color.YellowString("  invalid gold rows:"))
 		for _, s := range r.InvalidGolds {
 			fmt.Printf("    %s\n", s)
 		}
@@ -816,68 +1107,110 @@ func renderScoreText(r *scoreReport) {
 
 	if r.LLMvsGold != nil {
 		fmt.Println()
-		fmt.Println(bold("=== llm_label vs gold ==="))
-		renderComparison(r.LLMvsGold)
+		fmt.Println(bold("=== llm_labels vs gold ==="))
+		renderMultiComparison(r.LLMvsGold)
 	}
 	if r.JudgeVsGold != nil {
 		fmt.Println()
-		fmt.Println(bold("=== judge_label vs gold ==="))
-		renderComparison(r.JudgeVsGold)
+		fmt.Println(bold("=== judge_labels vs gold ==="))
+		renderMultiComparison(r.JudgeVsGold)
 	}
 	if r.JudgeVsLLM != nil {
 		fmt.Println()
-		fmt.Println(bold("=== judge_label vs llm_label (no gold required) ==="))
+		fmt.Println(bold("=== judge_labels vs llm_labels (no gold required) ==="))
 		fmt.Printf("  N            : %d\n", r.JudgeVsLLM.N)
-		fmt.Printf("  agreement    : %.3f\n", r.JudgeVsLLM.Agreement)
-		fmt.Printf("  Cohen's κ    : %.3f %s\n",
-			r.JudgeVsLLM.CohensKapp,
-			faint("("+kappaInterpretation(r.JudgeVsLLM.CohensKapp)+")"))
+		fmt.Printf("  exact match  : %.3f\n", r.JudgeVsLLM.ExactMatch)
+		fmt.Printf("  mean Jaccard : %.3f\n", r.JudgeVsLLM.MeanJaccard)
+	}
+	if r.Taxonomy != nil {
+		fmt.Println()
+		fmt.Println(bold("=== Taxonomy diagnostics (from gold_labels) ==="))
+		renderTaxonomy(r.Taxonomy)
+		_ = faint
 	}
 }
 
-func renderComparison(c *comparison) {
+func renderMultiComparison(c *multiComparison) {
 	bold := color.New(color.Bold).SprintFunc()
 	faint := color.New(color.Faint).SprintFunc()
 
-	fmt.Printf("  N: %d   accuracy: %.3f   macro-F1: %.3f   κ: %.3f %s\n\n",
-		c.N, c.Accuracy, c.MacroF1, c.Kappa,
-		faint("("+kappaInterpretation(c.Kappa)+")"))
+	fmt.Printf("  N: %d   exact-match: %.3f   Jaccard: %.3f   Hamming: %.3f\n",
+		c.N, c.ExactMatch, c.MeanJaccard, c.MeanHamming)
+	fmt.Printf("  macro-F1: %.3f   micro-F1: %.3f   macro-κ: %.3f %s\n\n",
+		c.MacroF1, c.MicroF1, c.MacroKappa,
+		faint("("+kappaInterpretation(c.MacroKappa)+")"))
 
-	fmt.Println(bold("  Per-facet metrics:"))
-	fmt.Printf("    %-14s %9s %7s %7s %8s\n", "facet", "precision", "recall", "F1", "support")
+	fmt.Println(bold("  Per-facet metrics (each facet = independent binary task):"))
+	fmt.Printf("    %-14s %9s %7s %7s %7s %8s\n", "facet", "precision", "recall", "F1", "κ", "support")
 	for _, f := range classifier.AllFacets {
 		m := c.PerFacet[f]
-		fmt.Printf("    %-14s %9.3f %7.3f %7.3f %8d\n",
-			string(f), m.Precision, m.Recall, m.F1, m.Support)
+		fmt.Printf("    %-14s %9.3f %7.3f %7.3f %7.3f %8d\n",
+			string(f), m.Precision, m.Recall, m.F1, m.Kappa, m.Support)
+	}
+}
+
+func renderTaxonomy(t *taxonomyReport) {
+	bold := color.New(color.Bold).SprintFunc()
+
+	fmt.Printf("  N items: %d\n\n", t.N)
+
+	// Cardinality histogram.
+	fmt.Println(bold("  Cardinality histogram (facets per item):"))
+	maxK := 0
+	for k := range t.Cardinality {
+		if k > maxK {
+			maxK = k
+		}
+	}
+	for k := 1; k <= maxK; k++ {
+		n := t.Cardinality[k]
+		if n == 0 {
+			continue
+		}
+		bar := strings.Repeat("█", n*20/max1(t.N))
+		fmt.Printf("    %d facet%s: %4d  %s\n", k, plural(k), n, bar)
 	}
 
+	// Singleton rate.
 	fmt.Println()
-	fmt.Println(bold("  Confusion matrix (rows = gold, columns = predicted):"))
+	fmt.Println(bold("  Singleton rate (P(only this facet | facet appears)):"))
+	for _, f := range classifier.AllFacets {
+		fmt.Printf("    %-14s %.2f\n", string(f), t.SingletonRate[f])
+	}
+
+	// Co-occurrence matrix.
+	fmt.Println()
+	fmt.Println(bold("  Co-occurrence matrix (counts):"))
 	fmt.Printf("    %-14s", "")
 	for _, f := range classifier.AllFacets {
 		fmt.Printf(" %6s", abbreviateFacet(f))
 	}
 	fmt.Println()
-	for _, gold := range classifier.AllFacets {
-		fmt.Printf("    %-14s", string(gold))
-		for _, pred := range classifier.AllFacets {
-			n := c.Confusion[gold][pred]
-			if n == 0 {
-				fmt.Printf(" %6s", faint("."))
-				continue
-			}
-			if gold == pred {
-				fmt.Printf(" %6s", color.GreenString("%d", n))
-			} else {
-				fmt.Printf(" %6d", n)
-			}
+	for _, f1 := range classifier.AllFacets {
+		fmt.Printf("    %-14s", string(f1))
+		for _, f2 := range classifier.AllFacets {
+			fmt.Printf(" %6d", t.Cooccurrence[f1][f2])
+		}
+		fmt.Println()
+	}
+
+	// PMI matrix.
+	fmt.Println()
+	fmt.Println(bold("  PMI (positive = more co-occurrent than chance; 0 = independent):"))
+	fmt.Printf("    %-14s", "")
+	for _, f := range classifier.AllFacets {
+		fmt.Printf(" %7s", abbreviateFacet(f))
+	}
+	fmt.Println()
+	for _, f1 := range classifier.AllFacets {
+		fmt.Printf("    %-14s", string(f1))
+		for _, f2 := range classifier.AllFacets {
+			fmt.Printf(" %7.2f", t.PMI[f1][f2])
 		}
 		fmt.Println()
 	}
 }
 
-// abbreviateFacet shortens facet names to keep the confusion matrix grid
-// readable on an 80-column terminal.
 func abbreviateFacet(f classifier.Facet) string {
 	switch f {
 	case classifier.FacetContext:
@@ -892,6 +1225,20 @@ func abbreviateFacet(f classifier.Facet) string {
 		return "sec"
 	}
 	return string(f)
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func max1(n int) int {
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 // ---------- shared I/O ----------

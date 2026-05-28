@@ -1,20 +1,27 @@
-# Reify Facet Labelling Rubric v1
+# Reify Facet Labelling Rubric v1.1
 
-This document is the **canonical reference** for assigning one of the five
-Reify facets to an extracted instruction. It is used to label gold-standard
-items for the classifier calibration battery (`reify calibrate`).
+This document is the **canonical reference** for assigning Reify facets to an
+extracted instruction. It is used to label gold-standard items for the
+classifier calibration battery (`reify-calibrate`).
 
-Pre-registered: the definitions and tie-breaking rules below are fixed before
+Pre-registered: the definitions and selection rules below are fixed before
 any gold labelling begins. Changes after labelling has started require a
-version bump (v2) and re-labelling of affected items.
+version bump and re-labelling of affected items.
+
+**v1.1 change (multi-label):** an item may now belong to one **or more**
+facets when its intent genuinely spans them (e.g. "Never commit `.env`
+files" is both `guardrails` and `security`). v1 forced a single label via
+tie-breakers, which destroyed information about real instructions that
+operate on two dimensions at once.
 
 ---
 
 ## 1. The five facets
 
-Every instruction belongs to exactly one facet. The label is the **dominant
-intent** of the instruction — what the author is trying to make the agent do
-or avoid. Not what the surface keywords suggest.
+Every instruction belongs to **one or more facets**. Read the item and ask
+for each facet: *does this instruction genuinely target this concern?* If
+yes, include it in the label set. There is no "primary" facet — multi-label
+items have no internal ordering.
 
 ### 1.1 `context`
 
@@ -139,45 +146,71 @@ a security event. "Never commit secrets" = security (consequence: leak).
 - "Sanitize all user input before passing to shell."
 
 **Negative examples**
-- "Never use `panic()`." → `guardrails`
-- "Log every authentication attempt." → `observability`
-- "The project uses bcrypt for password hashing." → `context`
+- "Never use `panic()`." → `guardrails` only
+- "Log every authentication attempt." → `observability` only (the act
+  of logging is independent of the data being logged)
+- "The project uses bcrypt for password hashing." → `context` only
 
 ---
 
-## 2. Tie-breaking rules
+## 2. Selecting facets (multi-label rules)
 
-When an instruction plausibly fits two facets, apply these in order:
+The change from v1: there are no tie-breakers. When an instruction targets
+two concerns, label both.
 
-1. **Security dominates.** If breaking the rule causes a security event,
-   label `security` regardless of surface form.
-2. **Guardrails over strategy.** A negatively-framed rule whose consequence
-   is not a security event is `guardrails`, not `strategy`, even if it
-   describes a workflow.
-3. **Observability over context.** "Log X with field Y" is `observability`
-   even if Y is described in `context`-like terms.
-4. **Strategy over context.** When in doubt between `context` and `strategy`,
-   ask "is this telling the agent *what to do* or *what is true*?". If both,
-   pick `strategy`.
-5. **No "other" / "general"** category. Force a choice. If the rubric
-   genuinely cannot accommodate the instruction, log it in the rubric's
-   `unresolved` section (see §4) and label provisionally with the closest
-   facet, marking `notes` in the corpus.
+### 2.1 Each facet test is independent
+
+For each of the 5 facets, ask: *does this item primarily speak to that
+facet?* If yes, include it. The 5 tests are independent — answering "yes"
+to `security` doesn't preclude answering "yes" to `guardrails`.
+
+### 2.2 Common multi-label combinations
+
+These appear frequently in real OSS agent files; expect them.
+
+- **`guardrails` + `security`** — a negatively-framed rule whose breach is
+  a security event. "Never commit `.env` files." Don't reduce to just
+  one — both are accurate.
+- **`observability` + `security`** — what to log when handling sensitive
+  data. "Log every authentication attempt, but redact the password
+  payload." Logging-instruction AND PII-prohibition.
+- **`strategy` + `context`** — workflow instructions that depend on a
+  factual claim about the project. "Run `pnpm` (this is a pnpm workspace,
+  not npm)." The instruction is to use pnpm (strategy) AND the
+  parenthetical is a fact (context). Two facets if both are non-trivial;
+  one facet if the fact is just a justification for the strategy.
+- **`strategy` + `security`** — a positive recipe whose purpose is
+  security. "Always run `npm audit` before publishing." It's a workflow
+  AND its purpose is a security concern.
+
+### 2.3 When in doubt
+
+Prefer **more facets** over fewer. The downstream metrics (recall per
+facet, exact-match accuracy, Jaccard) will surface over- and under-tagging
+patterns — they don't punish honest multi-labelling. Skipping a facet
+because "the other one is more important" loses information that the
+calibration can't recover.
+
+### 2.4 The hard exclusions
+
+- **No "other" / "general"** category. If none of the 5 facets apply,
+  log the item in `§4 Unresolved` and skip it (don't force-fit).
+- **No empty label sets.** If you'd skip the item, log it in `§4`. Items
+  with no facets pollute the metrics.
 
 ## 3. Labelling protocol
 
-1. Read the `text` field. Ignore the LLM label in `llm_label` for the first
-   pass.
-2. Read the `section` field as soft context: which heading the instruction
-   appeared under in the source file.
-3. Apply §1 definitions. If clear → assign. If unclear → apply §2 tie-breakers.
-4. Optional: glance at `source_file` and `source_repo` for further context
-   (a sentence about Python conventions is more likely `strategy` if the
-   source is a Python-focused agent file).
-5. Fill `gold_label`. Add a one-sentence `notes` if the choice required a
-   tie-breaker or the item is unusual.
-6. Calibrate yourself periodically: re-label the first 5 items after every
-   20 to check for drift in your own application of the rubric.
+1. Read the `text` field. Ignore `llm_labels` for the first pass.
+2. Read the `section` field as soft context.
+3. For each of the 5 facets, apply §1 and ask "does this apply?". Build a
+   set of YES answers.
+4. Optional: glance at `source_file` and `source_repo`.
+5. Fill `gold_labels` as a JSON array. Add a one-sentence `notes` if the
+   item is unusual (multi-label cases are NOT unusual — only flag genuine
+   edge cases that pushed the rubric).
+6. Calibrate yourself: re-label the first 5 items after every 20 to check
+   for drift in your application of the rubric, especially on the
+   guardrails/security and observability/strategy boundaries.
 
 ## 4. Unresolved cases (append as encountered)
 
@@ -191,8 +224,14 @@ _(empty in v1)_
 
 ## 5. Versioning
 
-- **v1** (2026-05-28): initial rubric. 5 facets, 5 tie-breakers, no
-  unresolved cases yet.
-- Bumping to v2 invalidates previously-labelled items if a v1→v2 facet
-  definition shift could change their label. Mark items as `v1` in the
-  corpus to support partial re-labelling.
+- **v1** (2026-05-28): initial rubric. 5 facets, 5 tie-breakers, single-
+  label per item, no unresolved cases.
+- **v1.1** (2026-05-29): multi-label per item. Replaced tie-breakers with
+  independent per-facet tests (§2.1). Added common multi-label patterns
+  (§2.2). v1 single labels remain valid as singleton sets, so labels
+  collected before this version do not need to be redone — but items that
+  *should* have been multi-label under v1.1 will show systematically
+  lower recall in the metrics until re-labelled.
+- A future v2 would invalidate previously-labelled items if a v1.1→v2
+  facet *definition* shifts. Mark items with `rubric` field in the corpus
+  to support partial re-labelling across versions.
