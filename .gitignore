@@ -1,6 +1,8 @@
 # Go binaries
 /reify
+/reify-calibrate
 /cmd/reify/reify
+/cmd/reify-calibrate/reify-calibrate
 *.test
 *.out
 
