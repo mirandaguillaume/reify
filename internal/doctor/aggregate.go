@@ -14,13 +14,11 @@ type FileResult struct {
 
 // AggregateReport summarizes findings across multiple files.
 type AggregateReport struct {
-	TotalFiles        int
-	AnalyzedFiles     int
-	FailedFiles       int
-	TotalFindings     int
-	ByCategory        map[string]int
-	FilesNoGuardrails []string
-	FilesNoSecurity   []string
+	TotalFiles    int
+	AnalyzedFiles int
+	FailedFiles   int
+	TotalFindings int
+	ByCategory    map[string]int
 }
 
 // Aggregate produces an AggregateReport from a slice of FileResults.
@@ -37,25 +35,8 @@ func Aggregate(results []FileResult) *AggregateReport {
 		}
 		report.AnalyzedFiles++
 		report.TotalFindings += len(r.Findings)
-
-		hasGuardrails := false
-		hasSecurity := false
-
 		for _, f := range r.Findings {
 			report.ByCategory[f.Category]++
-			if f.Category == "guardrails" {
-				hasGuardrails = true
-			}
-			if f.Category == "security" {
-				hasSecurity = true
-			}
-		}
-
-		if !hasGuardrails {
-			report.FilesNoGuardrails = append(report.FilesNoGuardrails, r.Path)
-		}
-		if !hasSecurity {
-			report.FilesNoSecurity = append(report.FilesNoSecurity, r.Path)
 		}
 	}
 

@@ -8,26 +8,25 @@ import (
 	"github.com/mirandaguillaume/reify/internal/llm"
 )
 
-// ClassifyLLM classifies instructions using an LLM for semantic accuracy.
-// Falls back to static Classify if the LLM response cannot be parsed.
+// ClassifyLLM extracts instructions syntactically then classifies them via
+// an LLM. Item extraction is deterministic (bullets, numbered lists);
+// facet assignment is the semantic problem that requires the LLM. If the
+// LLM response cannot be parsed, the error is returned — no static fallback.
 func ClassifyLLM(content, format string, provider llm.Provider) (Result, error) {
-	// Extract items first with the static extractor — extraction is deterministic,
-	// classification is the semantic problem that needs LLM.
-	static := Classify(content, format)
-	if len(static.Items) == 0 {
-		return static, nil
+	items := extractItems(content)
+	if len(items) == 0 {
+		return Result{Format: format}, nil
 	}
 
-	prompt := buildClassifyPrompt(static.Items)
+	prompt := buildClassifyPrompt(items)
 	response, err := provider.Complete(prompt)
 	if err != nil {
 		return Result{}, fmt.Errorf("LLM classification failed: %w", err)
 	}
 
-	classified, err := parseClassifyResponse(response, static.Items)
+	classified, err := parseClassifyResponse(response, items)
 	if err != nil {
-		// Fall back to static result rather than failing entirely.
-		return static, nil
+		return Result{}, fmt.Errorf("parse LLM classification response: %w", err)
 	}
 
 	return Result{Format: format, Items: classified}, nil
@@ -82,6 +81,11 @@ func parseClassifyResponse(response string, items []Item) ([]Item, error) {
 		result[i] = item
 		if f, ok := facetByIndex[i+1]; ok {
 			result[i].Facet = f
+		} else {
+			// LLM omitted this index — default to context (background) rather
+			// than leaving Facet empty. Better to surface "unclassified ≈ context"
+			// than to render a blank cell in tables.
+			result[i].Facet = FacetContext
 		}
 	}
 	return result, nil

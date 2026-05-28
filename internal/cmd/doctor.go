@@ -7,22 +7,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/fatih/color"
 	fconfig "github.com/mirandaguillaume/reify/internal/config"
+	"github.com/mirandaguillaume/reify/internal/discovery"
 	"github.com/mirandaguillaume/reify/internal/doctor"
-	"github.com/mirandaguillaume/reify/internal/doctor/export"
 	"github.com/mirandaguillaume/reify/internal/doctor/analyzer"
 	doctorctx "github.com/mirandaguillaume/reify/internal/doctor/context"
-	docindex "github.com/mirandaguillaume/reify/internal/doctor/index"
+	"github.com/mirandaguillaume/reify/internal/doctor/export"
 	"github.com/mirandaguillaume/reify/internal/doctor/llmutil"
 	"github.com/mirandaguillaume/reify/internal/doctor/parser"
 	"github.com/mirandaguillaume/reify/internal/doctor/registry"
-	"github.com/mirandaguillaume/reify/internal/doctor/scaffold"
-	"github.com/mirandaguillaume/reify/internal/doctor/static"
-	"github.com/mirandaguillaume/reify/internal/scanner"
 	"github.com/spf13/cobra"
 )
 
@@ -36,13 +32,8 @@ func init() {
 	var debugFlag bool
 	var updateRegistryFlag bool
 	var exportYAMLFlag bool
-	var fixFlag bool
-	var forceFlag bool
 	var noCacheFlag bool
-	var quickFlag bool
 	var ciFlag bool
-	var thoroughFlag bool
-	var securityFlag bool
 	var formatFlag string
 
 	doctorCmd := &cobra.Command{
@@ -51,8 +42,9 @@ func init() {
 		Long: `Analyze any agent file (Claude Code, GitHub Copilot, Reify YAML) and
 produce research-backed recommendations to improve it.
 
-When given a directory, discovers all agent files recursively and
-produces an aggregate summary after individual file results.
+Accepts a single file, an agent directory, or a repo root — recognized agent
+files are discovered automatically. All analysis is LLM-driven (an API key
+for Anthropic, OpenRouter, or a running Ollama instance is required).
 
 Configuration (ADR-7 precedence: flags > env > config file > defaults):
   Config file : .reify/config.yaml (searched from CWD up to filesystem root)
@@ -62,18 +54,13 @@ Sample .reify/config.yaml:
   doctor:
     provider: ollama
     model: llama4-scout
-    confidence_threshold: moderate
-    backup_retention: 168h
     debug: false
 
 Examples:
   reify doctor .claude/agents/code-reviewer.md
   reify doctor .github/agents/dash.agent.md
-  reify doctor skills/review-commenter.skill.yaml
   reify doctor .claude/agents/                      # directory mode
   reify doctor agent.md --provider openrouter
-  reify doctor agent.md --fix                       # interactive rewrite
-  reify doctor agent.md --fix --force               # skip diff-size check
   reify doctor --update-registry                    # download latest registry`,
 		Args: cobra.MaximumNArgs(1),
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -150,10 +137,6 @@ Examples:
 
 			// --export-yaml: parse agent file, emit Reify skill YAML to stdout.
 			if exportYAMLFlag {
-				if fixFlag {
-					return fmt.Errorf("--export-yaml cannot be combined with --fix")
-				}
-				// P3: --update-registry would be silently ignored after export exits; reject explicitly.
 				if updateRegistryFlag {
 					return fmt.Errorf("--export-yaml cannot be combined with --update-registry")
 				}
@@ -215,55 +198,22 @@ Examples:
 
 			target := args[0]
 
-			// --fix: scaffold AGENTS.md index + .agents/*.md
-			if fixFlag {
-				return runScaffoldMode(target, debugFlag, reg)
-			}
-
-			// Determine if target is file or directory
 			info, err := os.Stat(target)
 			if err != nil {
 				return fmt.Errorf("cannot access %s: %w", target, err)
 			}
 
-			// Determine analysis mode
-			mode := "default"
-			if quickFlag {
-				mode = "quick"
-			} else if thoroughFlag {
-				mode = "thorough"
-			} else if securityFlag {
-				mode = "security"
-			}
-
-			// CI mode: force plain text, auto-fallback to quick if no LLM
+			// CI mode: force plain text
 			if ciFlag {
 				color.NoColor = true
 			}
 
-			// Check if target is an index file
-			var indexContent []byte
-			isIndex := false
-			if !info.IsDir() {
-				if c, err := os.ReadFile(target); err == nil {
-					indexContent = c
-					isIndex = docindex.IsIndex(c)
-				}
-			}
-
 			cmdCtx := cmd.Context()
 			var analysisErr error
-			if isIndex {
-				analysisErr = runIndexModeWithContent(target, indexContent, mode, formatFlag, ciFlag, reg)
-			} else if mode == "quick" && formatFlag == "" && !ciFlag {
-				analysisErr = runQuickMode(target, reg)
-			} else if mode == "quick" && (formatFlag != "" || ciFlag) {
-				// Quick mode but with structured output — use pipeline
-				analysisErr = runPipelineMode(cmdCtx, target, providerFlag, modelFlag, debugFlag, noCacheFlag, ciFlag, mode, formatFlag, reg)
-			} else if info.IsDir() {
+			if info.IsDir() {
 				analysisErr = runDirectoryMode(cmdCtx, target, providerFlag, modelFlag, debugFlag, noCacheFlag, reg)
 			} else {
-				analysisErr = runPipelineMode(cmdCtx, target, providerFlag, modelFlag, debugFlag, noCacheFlag, ciFlag, mode, formatFlag, reg)
+				analysisErr = runPipelineMode(cmdCtx, target, providerFlag, modelFlag, debugFlag, noCacheFlag, ciFlag, formatFlag, reg)
 			}
 
 			// Show registry update notification once, after all findings
@@ -278,13 +228,8 @@ Examples:
 	doctorCmd.Flags().BoolVar(&debugFlag, "debug", false, "Show debug output on stderr")
 	doctorCmd.Flags().BoolVar(&updateRegistryFlag, "update-registry", false, "Download the latest research registry and exit")
 	doctorCmd.Flags().BoolVar(&exportYAMLFlag, "export-yaml", false, "Export parsed analysis as Reify skill YAML to stdout")
-	doctorCmd.Flags().BoolVar(&fixFlag, "fix", false, "Generate AGENTS.md index + specialized files from agent file")
-	doctorCmd.Flags().BoolVar(&forceFlag, "force", false, "Skip diff-size sanity check (use with --fix)")
 	doctorCmd.Flags().BoolVar(&noCacheFlag, "no-cache", false, "Bypass LLM response cache")
-	doctorCmd.Flags().BoolVar(&quickFlag, "quick", false, "Static checks only — no LLM, instant results")
 	doctorCmd.Flags().BoolVar(&ciFlag, "ci", false, "CI mode: plain text, quality gate, GitHub annotations")
-	doctorCmd.Flags().BoolVar(&thoroughFlag, "thorough", false, "Run all checks including thorough-tagged")
-	doctorCmd.Flags().BoolVar(&securityFlag, "security", false, "Run security-tagged checks only")
 	doctorCmd.Flags().StringVar(&formatFlag, "format", "", "Output format (json)")
 	rootCmd.AddCommand(doctorCmd)
 }
@@ -306,269 +251,8 @@ func notifyRegistryUpdate(reg *registry.Registry) {
 	}
 }
 
-// runQuickMode runs static checks only — no LLM, instant results.
-func runQuickMode(target string, reg *registry.Registry) error {
-	info, err := os.Stat(target)
-	if err != nil {
-		return fmt.Errorf("cannot access %s: %w", target, err)
-	}
-
-	var files []string
-	if info.IsDir() {
-		files, err = doctor.DiscoverAgentFiles(target)
-		if err != nil {
-			return fmt.Errorf("discover agent files: %w", err)
-		}
-	} else {
-		files = []string{target}
-	}
-
-	if len(files) == 0 {
-		fmt.Println("No agent files found.")
-		return nil
-	}
-
-	tty := doctor.IsTTY()
-	totalFindings := 0
-
-	for _, f := range files {
-		content, err := os.ReadFile(f)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", f, err)
-			continue
-		}
-
-		p, err := parser.DetectFormat(f, content)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Cannot detect format of %s: %v\n", f, err)
-			continue
-		}
-
-		analysis, err := p.Parse(content)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Parse error in %s: %v\n", f, err)
-			continue
-		}
-
-		// Run static checks only
-		findings := static.RunChecks(analysis, "quick")
-		structural := doctor.ComputeStructural(findings, sectionMappingCount)
-		doctor.RenderStructural(structural, f, tty)
-
-		// Also show non-presence findings (vague, ordering)
-		var otherFindings []llmutil.Finding
-		for _, finding := range findings {
-			if !strings.Contains(finding.Issue, "Missing") {
-				otherFindings = append(otherFindings, finding)
-			}
-		}
-		if len(otherFindings) > 0 {
-			doctor.RenderFindings(otherFindings, f, tty, reg)
-		}
-		totalFindings += len(findings)
-	}
-
-	if totalFindings > 0 {
-		return ErrFindings
-	}
-	return nil
-}
-
-// sectionMappingCount for structural score — must match static/presence.go (15 sections).
-// ComputeStructural adds +1 for secrets check internally.
-const sectionMappingCount = 15
-
-// runIndexModeWithContent analyzes an AGENTS.md index by resolving links and computing aggregate score.
-func runIndexModeWithContent(target string, content []byte, mode, formatFlag string, ciFlag bool, reg *registry.Registry) error {
-	baseDir := filepath.Dir(target)
-	resolved := docindex.ResolveIndex(content, baseDir)
-	tty := doctor.IsTTY() && !ciFlag
-
-	// Show index resolution
-	if tty {
-		fmt.Printf("\nIndex: %s (%d referenced files)\n", target, len(resolved))
-	} else {
-		fmt.Printf("Index: %s (%d referenced files)\n", target, len(resolved))
-	}
-
-	// Show missing file findings
-	missingFindings := docindex.MissingFiles(resolved)
-	for _, f := range missingFindings {
-		if tty {
-			fmt.Printf("  %s %s\n", color.RedString("x"), f.Issue)
-		} else {
-			fmt.Printf("  MISSING: %s\n", f.Issue)
-		}
-	}
-
-	// Compute aggregate score
-	agg := docindex.ScoreIndex(resolved, mode)
-
-	// Render
-	if formatFlag == "json" {
-		jsonBytes, err := docindex.AggregateToJSON(agg, target)
-		if err != nil {
-			return fmt.Errorf("JSON output: %w", err)
-		}
-		fmt.Println(string(jsonBytes))
-	} else {
-		fmt.Print(docindex.FormatAggregate(agg))
-	}
-
-	if len(missingFindings) > 0 || agg.Covered < agg.Total {
-		return ErrFindings
-	}
-	return nil
-}
-
-// runScaffoldMode generates AGENTS.md index + .agents/*.md from the original file.
-func runScaffoldMode(target string, debugFlag bool, reg *registry.Registry) error {
-	content, err := os.ReadFile(target)
-	if err != nil {
-		return fmt.Errorf("cannot read %s: %w", target, err)
-	}
-
-	// Check if this is already an index — scaffold only missing files
-	if docindex.IsIndex(content) {
-		return scaffoldMissing(target, content, debugFlag)
-	}
-
-	// Parse the original file
-	p, pErr := parser.DetectFormat(target, content)
-	var analysis *parser.AgentAnalysis
-	if pErr == nil {
-		analysis, _ = p.Parse(content)
-	}
-	if analysis == nil {
-		analysis = &parser.AgentAnalysis{Format: "unknown", RawContent: content}
-	}
-
-	// Scan codebase for context
-	projectRoot := doctorctx.DetectProjectRoot(filepath.Dir(target))
-	var ctx *scanner.CodebaseContext
-	if projectRoot != "" {
-		ctx, _ = scanner.ScanCodebase(projectRoot)
-	}
-
-	// Generate scaffold
-	result, err := scaffold.Scaffold(analysis, ctx)
-	if err != nil {
-		return fmt.Errorf("scaffold: %w", err)
-	}
-
-	// Write files
-	baseDir := filepath.Dir(target)
-	if baseDir == "." {
-		baseDir, _ = os.Getwd()
-	}
-
-	tty := doctor.IsTTY()
-
-	// Write AGENTS.md (skip if exists)
-	indexPath := filepath.Join(baseDir, "AGENTS.md")
-	if _, err := os.Stat(indexPath); err == nil {
-		if tty {
-			fmt.Printf("  %s %s (already exists, skipped)\n", color.YellowString("~"), indexPath)
-		} else {
-			fmt.Printf("  ~ %s (already exists, skipped)\n", indexPath)
-		}
-	} else {
-		if err := os.WriteFile(indexPath, result.IndexContent, 0644); err != nil {
-			return fmt.Errorf("write index: %w", err)
-		}
-		if tty {
-			fmt.Printf("  %s %s\n", color.GreenString("+"), indexPath)
-		} else {
-			fmt.Printf("  + %s\n", indexPath)
-		}
-	}
-
-	// Write .agents/*.md (skip existing)
-	written := 0
-	for relPath, content := range result.Files {
-		fullPath := filepath.Join(baseDir, relPath)
-		if _, err := os.Stat(fullPath); err == nil {
-			if tty {
-				fmt.Printf("  %s %s (already exists, skipped)\n", color.YellowString("~"), fullPath)
-			} else {
-				fmt.Printf("  ~ %s (already exists, skipped)\n", fullPath)
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-			return fmt.Errorf("create dir for %s: %w", relPath, err)
-		}
-		if err := os.WriteFile(fullPath, content, 0644); err != nil {
-			return fmt.Errorf("write %s: %w", relPath, err)
-		}
-		if tty {
-			fmt.Printf("  %s %s\n", color.GreenString("+"), fullPath)
-		} else {
-			fmt.Printf("  + %s\n", fullPath)
-		}
-		written++
-	}
-
-	if written == 0 {
-		fmt.Println("\nAll files already exist. Nothing written.")
-	} else if tty {
-		color.Green("\nScaffold complete: %d files written (%d migrated, %d templated)",
-			written, result.MigratedCount, result.TemplatedCount)
-	} else {
-		fmt.Printf("\nScaffold complete: %d files written (%d migrated, %d templated)\n",
-			written, result.MigratedCount, result.TemplatedCount)
-	}
-
-	return nil
-}
-
-// scaffoldMissing generates only the missing files referenced in an existing index.
-func scaffoldMissing(indexPath string, indexContent []byte, debugFlag bool) error {
-	baseDir := filepath.Dir(indexPath)
-	resolved := docindex.ResolveIndex(indexContent, baseDir)
-
-	tty := doctor.IsTTY()
-	created := 0
-
-	for _, rf := range resolved {
-		if !rf.Missing {
-			continue
-		}
-		// Find matching template
-		fullPath := filepath.Join(baseDir, rf.Path)
-		for _, sf := range scaffold.DefaultFiles {
-			if strings.Contains(rf.Path, sf.Name) {
-				content := sf.Title + " — TODO: customize for your project.\n"
-				if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-					return fmt.Errorf("create dir: %w", err)
-				}
-				if err := os.WriteFile(fullPath, []byte("# "+content), 0644); err != nil {
-					return fmt.Errorf("write %s: %w", rf.Path, err)
-				}
-				if tty {
-					fmt.Printf("  %s %s (new)\n", color.GreenString("+"), fullPath)
-				} else {
-					fmt.Printf("  + %s (new)\n", fullPath)
-				}
-				created++
-				break
-			}
-		}
-	}
-
-	if created == 0 {
-		fmt.Println("All referenced files exist. Nothing to scaffold.")
-	} else if tty {
-		color.Green("\n%d missing files created.", created)
-	} else {
-		fmt.Printf("\n%d missing files created.\n", created)
-	}
-
-	return nil
-}
-
-// runPipelineMode runs the full pipeline: static → LLM → post-process → gate.
-func runPipelineMode(ctx context.Context, filePath, providerFlag, modelFlag string, debugFlag, noCacheFlag, ciFlag bool, mode, formatFlag string, reg *registry.Registry) error {
+// runPipelineMode runs the LLM analysis pipeline + quality gate on one file.
+func runPipelineMode(ctx context.Context, filePath, providerFlag, modelFlag string, debugFlag, noCacheFlag, ciFlag bool, formatFlag string, reg *registry.Registry) error {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", filePath, err)
@@ -584,28 +268,16 @@ func runPipelineMode(ctx context.Context, filePath, providerFlag, modelFlag stri
 
 	tty := doctor.IsTTY() && !ciFlag
 
-	// Phase 1: Run static checks + render structural (instant)
-	opts := doctor.PipelineOpts{
-		Mode:         mode,
-		SectionCount: sectionMappingCount,
-	}
-
-	staticFindings := static.RunChecks(analysis, mode)
-	structural := doctor.ComputeStructural(staticFindings, sectionMappingCount)
-	if !ciFlag || formatFlag == "" {
-		doctor.RenderStructural(structural, filePath, tty)
-	}
-
-	// Phase 2: LLM analysis (unless CI with no provider)
+	// LLM analysis (required — static fallback was removed)
 	var llmFindings []llmutil.Finding
-	_, providerName, provErr := selectProvider(providerFlag, modelFlag, debugFlag)
+	_, _, provErr := selectProvider(providerFlag, modelFlag, debugFlag)
 	if provErr != nil {
 		if ciFlag {
 			if debugFlag {
-				fmt.Fprintf(os.Stderr, "[DEBUG] CI mode: no LLM available, static only\n")
+				fmt.Fprintf(os.Stderr, "[DEBUG] CI mode: no LLM available, no findings produced\n")
 			}
 		} else if tty {
-			fmt.Fprintf(os.Stderr, "\nNo LLM provider available — showing static analysis only.\n")
+			fmt.Fprintf(os.Stderr, "\nNo LLM provider available — analysis cannot proceed.\n")
 		}
 	} else {
 		var spin *doctor.Spinner
@@ -622,11 +294,9 @@ func runPipelineMode(ctx context.Context, filePath, providerFlag, modelFlag stri
 				fmt.Fprintf(os.Stderr, "[DEBUG] LLM analysis error: %v\n", err)
 			}
 		}
-		_ = providerName // used only for debug
 	}
 
-	// Phase 3: Run full pipeline
-	report := doctor.RunPipeline(analysis, llmFindings, opts)
+	report := doctor.RunPipeline(analysis, llmFindings, doctor.PipelineOpts{})
 	report.FilePath = filePath
 
 	// Phase 4: Output
@@ -653,7 +323,7 @@ func runPipelineMode(ctx context.Context, filePath, providerFlag, modelFlag stri
 
 // runDirectoryMode discovers agent files, analyzes each, and renders an aggregate summary.
 func runDirectoryMode(ctx context.Context, dirPath, providerFlag, modelFlag string, debugFlag, noCacheFlag bool, reg *registry.Registry) error {
-	files, err := doctor.DiscoverAgentFiles(dirPath)
+	files, err := discovery.DiscoverAgentFiles(dirPath)
 	if err != nil {
 		return fmt.Errorf("discover agent files in %s: %w", dirPath, err)
 	}

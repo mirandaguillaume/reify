@@ -8,71 +8,156 @@ import (
 	"github.com/fatih/color"
 	"github.com/mirandaguillaume/reify/internal/checker"
 	"github.com/mirandaguillaume/reify/internal/classifier"
+	"github.com/mirandaguillaume/reify/internal/discovery"
+	"github.com/mirandaguillaume/reify/internal/llm"
 	"github.com/spf13/cobra"
 )
 
 func init() {
 	var providerFlag, modelFlag string
-	var quick, all bool
+	var all, verbose bool
 	var targets []string
 
 	checkCmd := &cobra.Command{
-		Use:   "check <file>",
+		Use:   "check <file|directory>",
 		Short: "Assess instruction following compliance risk per harness",
 		Long: `Analyzes each instruction in an agent file and flags compliance risks
 per AI coding harness (Claude Code, Copilot, Cursor).
+
+Accepts a single file, an agent directory, or a repo root — all recognized
+agent files are checked. An LLM is required for instruction extraction and
+classification.
 
 Risk levels are derived from documented factors — no invented percentages:
   - Negative framing: IFEval benchmark (Zhou et al. 2023)
   - Middle position:  Liu et al. 2023 "Lost in the Middle"
   - Semantic constraint: not statically verifiable
-  - Harness weakness: community-reported empirical observation (labeled)
-
-Use --bench to validate empirically.`,
+  - Harness weakness: community-reported empirical observation (labeled)`,
 		Args: cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			runCheck(args[0], providerFlag, modelFlag, targets, quick, all)
+			runCheck(args[0], providerFlag, modelFlag, targets, all, verbose)
 		},
 	}
 
 	checkCmd.Flags().StringVar(&providerFlag, "provider", "", "LLM provider for classification")
 	checkCmd.Flags().StringVar(&modelFlag, "model", "claude-haiku-4-5-20251001", "LLM model name")
-	checkCmd.Flags().BoolVar(&quick, "quick", false, "static classification only — no LLM")
 	checkCmd.Flags().BoolVar(&all, "all", false, "show all instructions including low-risk ones")
+	checkCmd.Flags().BoolVar(&verbose, "verbose", false, "in directory mode, print full per-file detail (default: summary table)")
 	checkCmd.Flags().StringSliceVar(&targets, "targets", checker.Harnesses, "harnesses to check against")
 
 	rootCmd.AddCommand(checkCmd)
 }
 
-func runCheck(filePath, providerFlag, modelFlag string, targets []string, quick, all bool) {
-	content, err := os.ReadFile(filePath)
+type checkFileResult struct {
+	Path   string
+	Format string
+	Check  checker.CheckResult
+	Err    error
+	Empty  bool
+}
+
+func runCheck(path, providerFlag, modelFlag string, targets []string, all, verbose bool) {
+	files, err := discovery.Resolve(path)
 	if err != nil {
 		fmt.Println(color.RedString("Error: %v", err))
 		os.Exit(1)
 	}
-
-	format := detectFormat(filePath, string(content))
-
-	var cl classifier.Result
-	if quick {
-		cl = classifier.Classify(string(content), format)
-	} else {
-		provider, _, provErr := selectProvider(providerFlag, modelFlag, false)
-		if provErr != nil {
-			fmt.Println(color.YellowString("No LLM provider — falling back to static classification"))
-			cl = classifier.Classify(string(content), format)
-		} else {
-			cl, _ = classifier.ClassifyLLM(string(content), format, provider)
-		}
-	}
-
-	if len(cl.Items) == 0 {
-		fmt.Println(color.YellowString("No instructions found."))
+	if len(files) == 0 {
+		fmt.Println(color.YellowString("No agent files found in %s.", path))
 		return
 	}
 
+	provider, _, provErr := selectProvider(providerFlag, modelFlag, false)
+	if provErr != nil {
+		fmt.Println(color.RedString("Error: %v", provErr))
+		fmt.Println(color.YellowString("check requires an LLM provider. Set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or start an Ollama instance."))
+		os.Exit(1)
+	}
+
+	results := make([]checkFileResult, 0, len(files))
+	for _, f := range files {
+		results = append(results, checkOne(f, provider, targets))
+	}
+
+	if len(results) == 1 {
+		r := results[0]
+		if r.Err != nil {
+			fmt.Println(color.RedString("Error: %v", r.Err))
+			os.Exit(1)
+		}
+		if r.Empty {
+			fmt.Println(color.YellowString("No instructions found."))
+			return
+		}
+		printCheckResult(r.Path, r.Check, targets, all)
+		return
+	}
+
+	if verbose {
+		for i, r := range results {
+			if i > 0 {
+				fmt.Println()
+			}
+			if r.Err != nil {
+				fmt.Println(color.RedString("Error reading %s: %v", r.Path, r.Err))
+				continue
+			}
+			if r.Empty {
+				fmt.Printf("%s: no instructions found\n", r.Path)
+				continue
+			}
+			printCheckResult(r.Path, r.Check, targets, all)
+		}
+		return
+	}
+	printCheckSummary(results, targets)
+}
+
+func checkOne(filePath string, provider llm.Provider, targets []string) checkFileResult {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return checkFileResult{Path: filePath, Err: err}
+	}
+	format := detectFormat(filePath, string(content))
+
+	cl, classifyErr := classifier.ClassifyLLM(string(content), format, provider)
+	if classifyErr != nil {
+		return checkFileResult{Path: filePath, Format: format, Err: classifyErr}
+	}
+
+	if len(cl.Items) == 0 {
+		return checkFileResult{Path: filePath, Format: format, Empty: true}
+	}
+
 	result := checker.Check(string(content), format, targets, cl)
-	printCheckResult(filePath, result, targets, all)
+	return checkFileResult{Path: filePath, Format: format, Check: result}
+}
+
+func printCheckSummary(results []checkFileResult, targets []string) {
+	bold := color.New(color.Bold)
+	bold.Printf("Checked %d files\n\n", len(results))
+
+	header := fmt.Sprintf("  %-50s %-10s %s", "FILE", "FORMAT", strings.Join(targets, " "))
+	fmt.Println(color.New(color.Faint).Sprint(header))
+
+	for _, r := range results {
+		path := trimPath(r.Path, 50)
+		if r.Err != nil {
+			fmt.Printf("  %-50s %-10s %s\n", path, "-", color.RedString("error"))
+			continue
+		}
+		if r.Empty {
+			fmt.Printf("  %-50s %-10s %s\n", path, r.Format, color.New(color.Faint).Sprint("(no instructions)"))
+			continue
+		}
+		risks := make([]string, 0, len(targets))
+		for _, h := range targets {
+			risks = append(risks, fmt.Sprintf("%s %s", riskIcon(r.Check.Overall[h]), riskLabel(r.Check.Overall[h])))
+		}
+		fmt.Printf("  %-50s %-10s %s\n", path, r.Format, strings.Join(risks, "  "))
+	}
+	fmt.Println()
+	fmt.Println(color.New(color.Faint).Sprint("Use --verbose for per-file detail."))
 }
 
 func printCheckResult(filePath string, result checker.CheckResult, targets []string, all bool) {

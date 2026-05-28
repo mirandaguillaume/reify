@@ -131,77 +131,6 @@ func confidenceBadgePlain(confidence string) string {
 	}
 }
 
-// StructuralResult holds the result of static checks for rendering.
-type StructuralResult struct {
-	Passed  int
-	Total   int
-	Missing []string // categories of missing sections
-}
-
-// ComputeStructural counts pass/fail from static findings.
-// Includes section-presence checks (Missing) and secret scanning (any security finding = fail).
-//
-// Secret detection delegates to isSecretFinding (gate.go) so this routine and
-// gate.Evaluate stay in sync. Story 4-0 AC #3 — single source of truth for
-// secret classification.
-func ComputeStructural(findings []llmutil.Finding, totalSections int) StructuralResult {
-	missing := make(map[string]bool)
-	secretsFound := 0
-	for _, f := range findings {
-		if strings.Contains(f.Issue, "Missing") {
-			missing[f.Category] = true
-		}
-		if isSecretFinding(f) {
-			secretsFound++
-		}
-	}
-
-	// Total = sections + 1 (secrets clean check)
-	total := totalSections + 1
-	passed := totalSections - len(missing)
-	if secretsFound == 0 {
-		passed++ // secrets check passes
-	}
-
-	result := StructuralResult{
-		Total:  total,
-		Passed: passed,
-	}
-	for cat := range missing {
-		result.Missing = append(result.Missing, cat)
-	}
-	if secretsFound > 0 {
-		result.Missing = append(result.Missing, fmt.Sprintf("secrets_clean (%d secrets found)", secretsFound))
-	}
-	sort.Strings(result.Missing)
-	return result
-}
-
-// RenderStructural prints the structural score before LLM analysis.
-func RenderStructural(result StructuralResult, filePath string, tty bool) {
-	pct := 0
-	if result.Total > 0 {
-		pct = result.Passed * 100 / result.Total
-	}
-
-	if tty {
-		bold := color.New(color.Bold)
-		bold.Printf("\nStructural: %d/%d passed (%d%%)\n", result.Passed, result.Total, pct)
-		if len(result.Missing) > 0 {
-			for _, m := range result.Missing {
-				fmt.Printf("  %s %s\n", color.RedString("x"), m)
-			}
-		}
-	} else {
-		fmt.Printf("Structural: %d/%d passed (%d%%)\n", result.Passed, result.Total, pct)
-		if len(result.Missing) > 0 {
-			for _, m := range result.Missing {
-				fmt.Printf("  MISSING: %s\n", m)
-			}
-		}
-	}
-}
-
 // RenderAntiPatterns prints agent smell findings in a separate section.
 func RenderAntiPatterns(findings []llmutil.Finding, tty bool) {
 	var smells []llmutil.Finding
@@ -297,14 +226,6 @@ func renderAggregateTTY(r *AggregateReport) {
 		fmt.Println()
 	}
 
-	if len(r.FilesNoGuardrails) > 0 {
-		fmt.Printf("  %s %d files with no guardrails findings\n",
-			color.YellowString("[WARN]"), len(r.FilesNoGuardrails))
-	}
-	if len(r.FilesNoSecurity) > 0 {
-		fmt.Printf("  %s %d files with no security findings\n",
-			color.YellowString("[WARN]"), len(r.FilesNoSecurity))
-	}
 	fmt.Println()
 }
 
@@ -330,12 +251,6 @@ func renderAggregatePlain(r *AggregateReport) {
 		fmt.Println()
 	}
 
-	if len(r.FilesNoGuardrails) > 0 {
-		fmt.Printf("WARN: %d files with no guardrails findings\n", len(r.FilesNoGuardrails))
-	}
-	if len(r.FilesNoSecurity) > 0 {
-		fmt.Printf("WARN: %d files with no security findings\n", len(r.FilesNoSecurity))
-	}
 }
 
 func sortedCategories(m map[string]int) []string {
