@@ -1,5 +1,10 @@
 # Reify
 
+[![CI](https://github.com/mirandaguillaume/reify/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mirandaguillaume/reify/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/mirandaguillaume/reify/branch/main/graph/badge.svg)](https://codecov.io/gh/mirandaguillaume/reify)
+[![Go Reference](https://pkg.go.dev/badge/github.com/mirandaguillaume/reify.svg)](https://pkg.go.dev/github.com/mirandaguillaume/reify)
+[![Go Report Card](https://goreportcard.com/badge/github.com/mirandaguillaume/reify)](https://goreportcard.com/report/github.com/mirandaguillaume/reify)
+
 **Write your AI agent context once. Compile it to any coding harness.**
 
 Reify reads agent context files (`CLAUDE.md`, `copilot-instructions.md`, `.cursorrules`...) and compiles them to other formats — or generates them from scratch using a single YAML source of truth. It also analyses what you have: where the gaps are, and which instructions are likely to be ignored.
