@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -35,6 +37,7 @@ func init() {
 	var noCacheFlag bool
 	var ciFlag bool
 	var formatFlag string
+	var concurrencyFlag int
 
 	doctorCmd := &cobra.Command{
 		Use:   "doctor <file|directory>",
@@ -211,7 +214,7 @@ Examples:
 			cmdCtx := cmd.Context()
 			var analysisErr error
 			if info.IsDir() {
-				analysisErr = runDirectoryMode(cmdCtx, target, providerFlag, modelFlag, debugFlag, noCacheFlag, reg)
+				analysisErr = runDirectoryMode(cmdCtx, target, providerFlag, modelFlag, debugFlag, noCacheFlag, concurrencyFlag, reg)
 			} else {
 				analysisErr = runPipelineMode(cmdCtx, target, providerFlag, modelFlag, debugFlag, noCacheFlag, ciFlag, formatFlag, reg)
 			}
@@ -231,7 +234,35 @@ Examples:
 	doctorCmd.Flags().BoolVar(&noCacheFlag, "no-cache", false, "Bypass LLM response cache")
 	doctorCmd.Flags().BoolVar(&ciFlag, "ci", false, "CI mode: plain text, quality gate, GitHub annotations")
 	doctorCmd.Flags().StringVar(&formatFlag, "format", "", "Output format (json)")
+	doctorCmd.Flags().IntVar(&concurrencyFlag, "concurrency", concurrencyDefault(), "directory mode: number of files analyzed in parallel (default: 1 for Ollama, 8 otherwise; env REIFY_CONCURRENCY overrides)")
 	rootCmd.AddCommand(doctorCmd)
+}
+
+// concurrencyDefault is read by the flag declaration so REIFY_CONCURRENCY=N
+// works as a default without requiring --concurrency on every invocation.
+// A zero return value triggers provider-aware auto-detection in resolveConcurrency.
+func concurrencyDefault() int {
+	if v := os.Getenv("REIFY_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// resolveConcurrency picks the per-file worker count for directory mode.
+// Precedence: explicit flag/env (>0) → provider auto-detect → cloud default.
+// Ollama is serialized (1) because local inference can't parallelize requests
+// usefully; cloud providers default to 8 in-flight requests.
+func resolveConcurrency(requested int, providerFlag, modelFlag string, debugFlag bool) int {
+	if requested > 0 {
+		return requested
+	}
+	_, providerName, err := selectProvider(providerFlag, modelFlag, debugFlag)
+	if err == nil && isOllamaProvider(providerName) {
+		return 1
+	}
+	return 8
 }
 
 // notifyRegistryUpdate prints a one-time notification if a newer registry is available.
@@ -321,8 +352,10 @@ func runPipelineMode(ctx context.Context, filePath, providerFlag, modelFlag stri
 	return nil
 }
 
-// runDirectoryMode discovers agent files, analyzes each, and renders an aggregate summary.
-func runDirectoryMode(ctx context.Context, dirPath, providerFlag, modelFlag string, debugFlag, noCacheFlag bool, reg *registry.Registry) error {
+// runDirectoryMode discovers agent files, analyzes each in parallel, and
+// renders an aggregate summary. Per-file analysis is bounded by the
+// concurrency level (auto-detected from the provider when concurrency=0).
+func runDirectoryMode(ctx context.Context, dirPath, providerFlag, modelFlag string, debugFlag, noCacheFlag bool, concurrency int, reg *registry.Registry) error {
 	files, err := discovery.DiscoverAgentFiles(dirPath)
 	if err != nil {
 		return fmt.Errorf("discover agent files in %s: %w", dirPath, err)
@@ -338,28 +371,55 @@ func runDirectoryMode(ctx context.Context, dirPath, providerFlag, modelFlag stri
 		return nil
 	}
 
+	effective := resolveConcurrency(concurrency, providerFlag, modelFlag, debugFlag)
+	if effective > len(files) {
+		effective = len(files)
+	}
+	if debugFlag {
+		fmt.Fprintf(os.Stderr, "[DEBUG] Directory mode: %d files, concurrency=%d\n", len(files), effective)
+	}
+
 	tty := doctor.IsTTY()
-	var results []doctor.FileResult
-	totalFindings := 0
+	results := make([]doctor.FileResult, len(files))
+	var totalFindings int64
+	var totalMu sync.Mutex
+	var outMu sync.Mutex // serializes stdout/stderr writes so per-file blocks stay coherent
+
+	sem := make(chan struct{}, effective)
+	var wg sync.WaitGroup
 
 	for i, f := range files {
-		if debugFlag {
-			fmt.Fprintf(os.Stderr, "[DEBUG] Analyzing file %d of %d: %s\n", i+1, len(files), f)
-		} else {
-			fmt.Fprintf(os.Stderr, "Analyzing file %d of %d: %s\n", i+1, len(files), f)
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, path string) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		findings, format, err := analyzeFile(ctx, f, providerFlag, modelFlag, debugFlag, noCacheFlag, reg)
-		result := doctor.FileResult{Path: f, Format: format, Error: err}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Error: %s\n", err)
-		} else {
-			result.Findings = findings
-			doctor.RenderFindings(findings, f, tty, reg)
-			totalFindings += len(findings)
-		}
-		results = append(results, result)
+			findings, format, ferr := analyzeFile(ctx, path, providerFlag, modelFlag, debugFlag, noCacheFlag, reg)
+			r := doctor.FileResult{Path: path, Format: format, Error: ferr}
+			if ferr == nil {
+				r.Findings = findings
+			}
+			results[idx] = r
+
+			outMu.Lock()
+			defer outMu.Unlock()
+			if debugFlag {
+				fmt.Fprintf(os.Stderr, "[DEBUG] Analyzed file %d of %d: %s\n", idx+1, len(files), path)
+			} else {
+				fmt.Fprintf(os.Stderr, "Analyzed file %d of %d: %s\n", idx+1, len(files), path)
+			}
+			if ferr != nil {
+				fmt.Fprintf(os.Stderr, "  Error: %s\n", ferr)
+				return
+			}
+			doctor.RenderFindings(findings, path, tty, reg)
+			totalMu.Lock()
+			totalFindings += int64(len(findings))
+			totalMu.Unlock()
+		}(i, f)
 	}
+	wg.Wait()
 
 	// Cross-file consistency analysis (if >1 file and LLM available)
 	if len(results) > 1 {
@@ -397,7 +457,7 @@ func runDirectoryMode(ctx context.Context, dirPath, providerFlag, modelFlag stri
 					}
 				} else if len(crossFindings) > 0 {
 					doctor.RenderConsistency(crossFindings, tty, reg)
-					totalFindings += len(crossFindings)
+					totalFindings += int64(len(crossFindings))
 				}
 			}
 		}
