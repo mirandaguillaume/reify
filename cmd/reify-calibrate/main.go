@@ -44,6 +44,7 @@ See docs/calibration/rubric.md for the canonical facet definitions.`,
 	root.AddCommand(sampleCmd())
 	root.AddCommand(judgeCmd())
 	root.AddCommand(scoreCmd())
+	root.AddCommand(exploreCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -59,10 +60,11 @@ type calibrateItem struct {
 	Section     string   `json:"section,omitempty"`
 	SourceFile  string   `json:"source_file"`
 	SourceRepo  string   `json:"source_repo"`
-	LLMLabels   []string `json:"llm_labels,omitempty"`
-	GoldLabels  []string `json:"gold_labels,omitempty"`
-	JudgeLabels []string `json:"judge_labels,omitempty"`
-	Notes       string   `json:"notes,omitempty"`
+	LLMLabels      []string `json:"llm_labels,omitempty"`
+	GoldLabels     []string `json:"gold_labels,omitempty"`
+	JudgeLabels    []string `json:"judge_labels,omitempty"`
+	EmergentLabels []string `json:"emergent_labels,omitempty"`
+	Notes          string   `json:"notes,omitempty"`
 }
 
 // UnmarshalJSON accepts both v1 (singular string fields) and v1.1
@@ -76,13 +78,14 @@ func (it *calibrateItem) UnmarshalJSON(data []byte) error {
 		Section     string   `json:"section,omitempty"`
 		SourceFile  string   `json:"source_file"`
 		SourceRepo  string   `json:"source_repo"`
-		LLMLabel    string   `json:"llm_label,omitempty"`
-		LLMLabels   []string `json:"llm_labels,omitempty"`
-		GoldLabel   string   `json:"gold_label,omitempty"`
-		GoldLabels  []string `json:"gold_labels,omitempty"`
-		JudgeLabel  string   `json:"judge_label,omitempty"`
-		JudgeLabels []string `json:"judge_labels,omitempty"`
-		Notes       string   `json:"notes,omitempty"`
+		LLMLabel       string   `json:"llm_label,omitempty"`
+		LLMLabels      []string `json:"llm_labels,omitempty"`
+		GoldLabel      string   `json:"gold_label,omitempty"`
+		GoldLabels     []string `json:"gold_labels,omitempty"`
+		JudgeLabel     string   `json:"judge_label,omitempty"`
+		JudgeLabels    []string `json:"judge_labels,omitempty"`
+		EmergentLabels []string `json:"emergent_labels,omitempty"`
+		Notes          string   `json:"notes,omitempty"`
 	}
 	var r raw
 	if err := json.Unmarshal(data, &r); err != nil {
@@ -97,6 +100,7 @@ func (it *calibrateItem) UnmarshalJSON(data []byte) error {
 	it.LLMLabels = chooseLabels(r.LLMLabels, r.LLMLabel)
 	it.GoldLabels = chooseLabels(r.GoldLabels, r.GoldLabel)
 	it.JudgeLabels = chooseLabels(r.JudgeLabels, r.JudgeLabel)
+	it.EmergentLabels = r.EmergentLabels
 	return nil
 }
 
@@ -1239,6 +1243,633 @@ func max1(n int) int {
 		return 1
 	}
 	return n
+}
+
+// ---------- explore (open coding) ----------
+
+// exploreCmd groups subcommands for open coding — letting an LLM emit its
+// own free-form labels without exposure to the Reify facet taxonomy. The
+// emergent vocabulary diagnoses whether the imposed top-down taxonomy
+// matches the natural lines of cleavage the model finds in the data.
+func exploreCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "explore",
+		Short: "Open-coding experiments: let the LLM tag items with its own vocabulary",
+		Long: `explore inverts the usual labelling direction. Instead of asking the LLM
+to map items into a fixed taxonomy (Reify's 5 facets), we ask it to invent
+its own tags from scratch. The resulting emergent vocabulary is evidence
+for or against the imposed taxonomy:
+
+  - If many emergent tags cluster around concepts that match the 5 facets,
+    the taxonomy is validated bottom-up.
+  - If the dominant emergent tags do NOT line up with the 5 facets,
+    the taxonomy is leaking real distinctions the model sees.
+
+Subcommands:
+  tag      Round 1: ask the LLM for 1-3 free-form snake_case tags per item
+
+Future rounds (cluster, relabel, report) land in follow-up commits.`,
+	}
+	cmd.AddCommand(exploreTagCmd())
+	cmd.AddCommand(exploreClusterCmd())
+	return cmd
+}
+
+// ---------- explore cluster ----------
+
+func exploreClusterCmd() *cobra.Command {
+	var inputs []string
+	var output string
+	var providerFlag, modelFlag string
+
+	cmd := &cobra.Command{
+		Use:   "cluster",
+		Short: "Round 2: ask a strong LLM to group the emergent vocabulary into thematic clusters",
+		Long: `cluster reads one or more corpus JSONL files, aggregates the union of
+emergent_labels into a flat vocabulary (with provenance — which source
+each tag came from and how often), and asks a referee LLM to group the
+labels into thematic clusters by intent class.
+
+The referee picks the cluster count itself within a reasonable range
+(3-10). The output is a JSON file with cluster names, member tags,
+counts, and per-source coverage — diagnostic of whether the same
+clusters absorb vocabulary from different annotators.
+
+This is the "does order emerge from chaos?" test. If two annotators
+that share 1.4% of vocabulary nevertheless map into the same N
+clusters when refereed by a third party, the underlying intent
+structure is real even though each annotator's surface vocabulary
+isn't. If the clusters absorb only one source, the disagreement is
+deep.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runExploreCluster(inputs, output, providerFlag, modelFlag)
+		},
+	}
+
+	cmd.Flags().StringSliceVarP(&inputs, "input", "i", nil, "input JSONL corpus (repeat for multiple sources)")
+	cmd.Flags().StringVarP(&output, "output", "o", "clusters.json", "output JSON path for cluster definitions")
+	cmd.Flags().StringVar(&providerFlag, "provider", "anthropic", "LLM provider (anthropic, openrouter, ollama)")
+	cmd.Flags().StringVar(&modelFlag, "model", "claude-opus-4-8", "referee model — strong models cluster more coherently")
+	_ = cmd.MarkFlagRequired("input")
+	return cmd
+}
+
+type tagFreq struct {
+	Tag   string
+	Count int
+}
+
+type clusterResult struct {
+	Sources       []sourceSummary             `json:"sources"`
+	VocabSize     int                         `json:"vocab_size"`
+	Clusters      map[string][]clusterMember  `json:"clusters"`
+	Outliers      []clusterMember             `json:"outliers,omitempty"`
+	RawResponse   string                      `json:"raw_response,omitempty"`
+}
+
+type sourceSummary struct {
+	Path        string `json:"path"`
+	Items       int    `json:"items"`
+	UniqueTags  int    `json:"unique_tags"`
+	TotalTags   int    `json:"total_tags"`
+}
+
+type clusterMember struct {
+	Tag     string         `json:"tag"`
+	Total   int            `json:"total"`
+	PerSrc  map[string]int `json:"per_source"`
+}
+
+func runExploreCluster(inputs []string, output, providerFlag, modelFlag string) error {
+	if len(inputs) == 0 {
+		return fmt.Errorf("at least one --input is required")
+	}
+
+	// Aggregate vocabulary across all sources, keeping provenance.
+	tagSourceCount := map[string]map[string]int{} // tag -> sourceLabel -> count
+	tagTotalCount := map[string]int{}
+	var sources []sourceSummary
+
+	for _, in := range inputs {
+		items, err := readJSONL(in)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", in, err)
+		}
+		label := filepath.Base(in)
+		uniq := map[string]bool{}
+		total := 0
+		for _, it := range items {
+			for _, t := range it.EmergentLabels {
+				if tagSourceCount[t] == nil {
+					tagSourceCount[t] = map[string]int{}
+				}
+				tagSourceCount[t][label]++
+				tagTotalCount[t]++
+				uniq[t] = true
+				total++
+			}
+		}
+		sources = append(sources, sourceSummary{
+			Path: in, Items: len(items), UniqueTags: len(uniq), TotalTags: total,
+		})
+	}
+	if len(tagTotalCount) == 0 {
+		return fmt.Errorf("no emergent_labels found in any input")
+	}
+
+	fmt.Printf("Aggregated vocabulary: %d unique tags from %d source(s)\n", len(tagTotalCount), len(inputs))
+
+	// Sort tags by combined frequency for the prompt (most informative first).
+	ranked := make([]tagFreq, 0, len(tagTotalCount))
+	for t, c := range tagTotalCount {
+		ranked = append(ranked, tagFreq{t, c})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Count != ranked[j].Count {
+			return ranked[i].Count > ranked[j].Count
+		}
+		return ranked[i].Tag < ranked[j].Tag
+	})
+
+	provider, err := selectJudgeProvider(providerFlag, modelFlag)
+	if err != nil {
+		return fmt.Errorf("provider: %w", err)
+	}
+	fmt.Printf("Referee: %s / %s\n\n", color.CyanString(providerFlag), modelFlag)
+
+	prompt := buildClusterPrompt(ranked)
+	fmt.Println("Sending vocabulary to referee...")
+	resp, err := provider.Complete(prompt)
+	if err != nil {
+		return fmt.Errorf("referee call: %w", err)
+	}
+
+	clusters, outliers, parseErr := parseClusterResponse(resp)
+	if parseErr != nil {
+		// Persist the raw response so the user can inspect it.
+		result := clusterResult{
+			Sources: sources, VocabSize: len(tagTotalCount), RawResponse: resp,
+		}
+		_ = writeJSON(output, result)
+		return fmt.Errorf("parse referee response: %w (raw response written to %s)", parseErr, output)
+	}
+
+	result := clusterResult{
+		Sources:   sources,
+		VocabSize: len(tagTotalCount),
+		Clusters:  map[string][]clusterMember{},
+	}
+	for name, tags := range clusters {
+		for _, t := range tags {
+			m := clusterMember{Tag: t, Total: tagTotalCount[t], PerSrc: tagSourceCount[t]}
+			result.Clusters[name] = append(result.Clusters[name], m)
+		}
+	}
+	for _, t := range outliers {
+		result.Outliers = append(result.Outliers, clusterMember{Tag: t, Total: tagTotalCount[t], PerSrc: tagSourceCount[t]})
+	}
+
+	if err := writeJSON(output, result); err != nil {
+		return fmt.Errorf("write %s: %w", output, err)
+	}
+
+	renderClusterSummary(result)
+	fmt.Printf("\nDetails: %s\n", output)
+	return nil
+}
+
+func buildClusterPrompt(ranked []tagFreq) string {
+	var b strings.Builder
+	b.WriteString(`You will receive a list of labels that several different annotators
+used to describe the same kind of items (instructions extracted from
+AI coding agent context files). Each annotator invented its own
+vocabulary independently, so you will see synonymous or near-synonymous
+labels coined by different annotators.
+
+Your task: group these labels into thematic clusters where each cluster
+represents a coherent intent class. An intent class describes the kind
+of action the author of the instruction was taking toward the agent
+(informing, ordering, prohibiting, requiring observation, restricting
+access, etc.), not the topic of the instruction.
+
+Constraints:
+- Pick the number of clusters that best fits the data. Reasonable range:
+  3 to 10. Don't force a specific number; let the natural structure
+  determine it.
+- Each cluster needs a short name in snake_case that describes the
+  intent class.
+- Don't put every label in its own cluster (defeats the purpose).
+- Don't lump everything into one or two clusters either.
+- Labels that genuinely fit nowhere go in an "outliers" array.
+
+Labels to cluster (count is total frequency across all annotators):
+`)
+	for _, tf := range ranked {
+		fmt.Fprintf(&b, "- %s (x%d)\n", tf.Tag, tf.Count)
+	}
+	b.WriteString(`
+Output exactly one JSON object, no prose around it, in this shape:
+
+{
+  "clusters": {
+    "cluster_name_1": ["label_a", "label_b", "..."],
+    "cluster_name_2": ["..."]
+  },
+  "outliers": ["label_x", "label_y"]
+}
+
+Every label in the input must appear in exactly one cluster or in the
+outliers array. Do not invent labels that were not in the input.`)
+	return b.String()
+}
+
+// parseClusterResponse extracts the JSON object from the referee's
+// response, tolerant of leading prose, code fences, or trailing text.
+func parseClusterResponse(s string) (map[string][]string, []string, error) {
+	// Find the outermost balanced { ... } in the response.
+	start := strings.Index(s, "{")
+	end := strings.LastIndex(s, "}")
+	if start == -1 || end == -1 || end <= start {
+		return nil, nil, fmt.Errorf("no JSON object found")
+	}
+	payload := s[start : end+1]
+
+	var raw struct {
+		Clusters map[string][]string `json:"clusters"`
+		Outliers []string            `json:"outliers"`
+	}
+	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
+		return nil, nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return raw.Clusters, raw.Outliers, nil
+}
+
+func writeJSON(path string, v any) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+func renderClusterSummary(r clusterResult) {
+	bold := color.New(color.Bold).SprintFunc()
+	faint := color.New(color.Faint).SprintFunc()
+
+	fmt.Println()
+	fmt.Println(bold("Cluster summary:"))
+	fmt.Printf("  total labels clustered: %d\n", r.VocabSize)
+	fmt.Printf("  clusters emerged      : %d\n", len(r.Clusters))
+	fmt.Printf("  outliers              : %d\n", len(r.Outliers))
+
+	// Sort clusters by total occurrence count descending.
+	type clusterRank struct {
+		Name      string
+		Size      int
+		Occur     int
+		PerSrc    map[string]int
+	}
+	srcNames := map[string]bool{}
+	var ranks []clusterRank
+	for name, members := range r.Clusters {
+		occur := 0
+		per := map[string]int{}
+		for _, m := range members {
+			occur += m.Total
+			for s, n := range m.PerSrc {
+				per[s] += n
+				srcNames[s] = true
+			}
+		}
+		ranks = append(ranks, clusterRank{name, len(members), occur, per})
+	}
+	sort.Slice(ranks, func(i, j int) bool {
+		return ranks[i].Occur > ranks[j].Occur
+	})
+
+	// Header: cluster | size | occur | per-source breakdown
+	var srcList []string
+	for s := range srcNames {
+		srcList = append(srcList, s)
+	}
+	sort.Strings(srcList)
+
+	fmt.Println()
+	fmt.Printf("  %-32s %6s %7s", "cluster", "size", "occur")
+	for _, s := range srcList {
+		fmt.Printf(" %12s", abbreviateSource(s))
+	}
+	fmt.Println()
+	for _, c := range ranks {
+		fmt.Printf("  %-32s %6d %7d", c.Name, c.Size, c.Occur)
+		for _, s := range srcList {
+			n := c.PerSrc[s]
+			pct := 0
+			if c.Occur > 0 {
+				pct = 100 * n / c.Occur
+			}
+			fmt.Printf(" %5d (%3d%%)", n, pct)
+		}
+		fmt.Println()
+	}
+	if len(r.Outliers) > 0 {
+		fmt.Printf("  %s\n", faint(fmt.Sprintf("(%d outlier labels not in any cluster)", len(r.Outliers))))
+	}
+}
+
+func abbreviateSource(s string) string {
+	if len(s) <= 12 {
+		return s
+	}
+	return s[:9] + "..."
+}
+
+func exploreTagCmd() *cobra.Command {
+	var input, output string
+	var providerFlag, modelFlag string
+	var concurrencyFlag int
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "tag",
+		Short: "Round 1: emit 1-3 snake_case freeform tags per item (no fixed vocabulary)",
+		Long: `tag reads a corpus and asks the LLM, for each item, to produce 1-3
+short snake_case tags describing what the instruction is about. The
+prompt does NOT mention the Reify facets so the model is free to
+invent vocabulary.
+
+Output: writes emergent_labels[] to each row. Subsequent rounds
+(cluster, relabel) consume this field.
+
+Choose a model strong enough to be specific (Sonnet 4.6 default, Opus
+for higher quality). Cheap models tend to repeat generic terms like
+"workflow" or "guidance".`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runExploreTag(input, output, providerFlag, modelFlag, concurrencyFlag, force)
+		},
+	}
+
+	cmd.Flags().StringVarP(&input, "input", "i", "", "input JSONL corpus (required)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output JSONL path (default: overwrite input)")
+	cmd.Flags().StringVar(&providerFlag, "provider", "anthropic", "LLM provider (anthropic, openrouter, ollama)")
+	cmd.Flags().StringVar(&modelFlag, "model", "claude-sonnet-4-6", "model name (Sonnet 4.6 default for cost)")
+	cmd.Flags().IntVar(&concurrencyFlag, "concurrency", 8, "parallel tag requests")
+	cmd.Flags().BoolVar(&force, "force", false, "re-tag items that already have emergent_labels")
+	_ = cmd.MarkFlagRequired("input")
+	return cmd
+}
+
+func runExploreTag(input, output, providerFlag, modelFlag string, concurrency int, force bool) error {
+	if output == "" {
+		output = input
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+
+	items, err := readJSONL(input)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", input, err)
+	}
+	if len(items) == 0 {
+		return fmt.Errorf("corpus is empty")
+	}
+
+	provider, err := selectJudgeProvider(providerFlag, modelFlag)
+	if err != nil {
+		return fmt.Errorf("provider: %w", err)
+	}
+	fmt.Printf("Tagger: %s / %s\n", color.CyanString(providerFlag), modelFlag)
+
+	var pending []int
+	for i, it := range items {
+		if len(it.EmergentLabels) > 0 && !force {
+			continue
+		}
+		pending = append(pending, i)
+	}
+	if len(pending) == 0 {
+		fmt.Println(color.YellowString("All items already have emergent_labels. Use --force to re-tag."))
+		return nil
+	}
+
+	fmt.Printf("Tagging %d / %d items (concurrency=%d)\n\n", len(pending), len(items), concurrency)
+
+	header := emergentTagPromptHeader()
+
+	var (
+		mu     sync.Mutex
+		done   int
+		errors int
+		vocab  = map[string]int{} // dynamic vocabulary count for the live progress signal
+	)
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for _, idx := range pending {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			tags, err := emergentTagOne(provider, header, items[i])
+
+			mu.Lock()
+			defer mu.Unlock()
+			done++
+			if err != nil {
+				errors++
+				fmt.Fprintf(os.Stderr, "  [%d/%d] %s: error: %v\n", done, len(pending), items[i].ID, err)
+				return
+			}
+			items[i].EmergentLabels = tags
+			for _, t := range tags {
+				vocab[t]++
+			}
+			if done%20 == 0 || done == len(pending) {
+				fmt.Fprintf(os.Stderr, "  progress %d/%d  errors=%d  vocab_size=%d\n",
+					done, len(pending), errors, len(vocab))
+			}
+		}(idx)
+	}
+	wg.Wait()
+
+	if err := writeJSONL(output, items); err != nil {
+		return fmt.Errorf("write %s: %w", output, err)
+	}
+
+	fmt.Println()
+	fmt.Printf("Done. Unique tags in vocabulary: %d\n", len(vocab))
+	if len(vocab) > 0 {
+		topN := 15
+		ranked := rankVocabulary(vocab)
+		if topN > len(ranked) {
+			topN = len(ranked)
+		}
+		fmt.Printf("Top %d tags:\n", topN)
+		for _, e := range ranked[:topN] {
+			fmt.Printf("  %4d  %s\n", e.count, e.tag)
+		}
+	}
+	fmt.Printf("Wrote %s\n", output)
+	return nil
+}
+
+// emergentTagPromptHeader sets up an open-coding task on the *intent*
+// axis. No positive examples of intent vocabulary are given — those
+// would seed the model and contaminate the emergent signal. The axis
+// distinction is carried entirely by a same-topic contrast and a list
+// of topical anti-examples. Updated 2026-05-29 after an earlier
+// version's "illustrative" intent labels (e.g. "domain_fact") were
+// observed to echo back as the top tags.
+func emergentTagPromptHeader() string {
+	return `You are reading instructions extracted from AI coding agent context
+files (CLAUDE.md, copilot-instructions.md, AGENTS.md, etc.). For each
+item, identify the AUTHOR'S INTENT toward the agent — the kind of
+behavioural shaping the author is performing by writing this line.
+
+Critical: we want intent classes, NOT topics.
+
+A topic is what the instruction is ABOUT.
+An intent is what the AUTHOR IS DOING to the agent by writing it.
+
+Two items can share a topic but have different intents. For example:
+  - "Use parameterized queries for all DB calls."
+  - "The project uses PostgreSQL 16."
+Both touch SQL/queries. The first one orders the agent to do
+something. The second one informs the agent of a fact. Same topic,
+different intent.
+
+Topical labels to AVOID (do not use these or anything analogous):
+  sql_injection_prevention, null_safety, logging_format,
+  package_choice, ui_design, race_condition_detection,
+  pnpm_workspace, secret_management, code_organization
+
+You decide the intent vocabulary entirely on your own. Do NOT assume
+any predefined taxonomy. Do NOT recycle vocabulary from this prompt's
+examples — those are anti-examples on the wrong axis. Pick whatever
+short snake_case label best captures THIS item's intent class.
+
+Constraints:
+- 1 to 3 labels per item, no fewer, no more
+- snake_case (lowercase, underscores)
+- intent axis only — describe the kind of action the author is taking
+  toward the agent
+- do not echo the section heading or topic verbatim
+- do not output the same tag twice in one answer
+
+Output: just the labels, space-separated. No explanation, no quotes,
+no punctuation other than the underscores inside tags.
+
+---
+
+`
+}
+
+func emergentTagOne(provider llm.Provider, header string, it calibrateItem) ([]string, error) {
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("Item:\n\n")
+	fmt.Fprintf(&b, "Text: %s\n", it.Text)
+	if it.Section != "" {
+		fmt.Fprintf(&b, "Section: %s\n", it.Section)
+	}
+	if it.SourceFile != "" {
+		fmt.Fprintf(&b, "Source file: %s\n", it.SourceFile)
+	}
+	b.WriteString("\nYour 1-3 snake_case labels:\n")
+
+	resp, err := provider.Complete(b.String())
+	if err != nil {
+		return nil, err
+	}
+	tags := parseEmergentTags(resp)
+	if len(tags) == 0 {
+		return nil, fmt.Errorf("no usable tags in response (raw: %q)", strings.TrimSpace(resp))
+	}
+	return tags, nil
+}
+
+// parseEmergentTags is tolerant of LLM noise: tokenizes on whitespace and
+// punctuation, drops empty tokens, normalises to lower snake_case, dedupes
+// while preserving first-seen order. Caps at 5 tags as a sanity bound.
+func parseEmergentTags(s string) []string {
+	s = strings.TrimSpace(s)
+	for _, prefix := range []string{"labels:", "label:", "tags:", "tag:", "answer:"} {
+		if strings.HasPrefix(strings.ToLower(s), prefix) {
+			s = strings.TrimSpace(s[len(prefix):])
+		}
+	}
+	s = strings.Trim(s, "`'\"")
+
+	tokens := strings.FieldsFunc(s, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r', ',', ';', '/', '|':
+			return true
+		}
+		return false
+	})
+
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range tokens {
+		t = strings.Trim(t, "`'\".-")
+		// Normalise: lowercase, replace hyphens with underscores, drop any
+		// remaining non snake_case characters.
+		t = strings.ToLower(t)
+		t = strings.ReplaceAll(t, "-", "_")
+		t = filterSnakeCase(t)
+		if t == "" {
+			continue
+		}
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+		if len(out) >= 5 {
+			break
+		}
+	}
+	return out
+}
+
+func filterSnakeCase(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	// Collapse runs of underscores and trim leading/trailing.
+	out := b.String()
+	for strings.Contains(out, "__") {
+		out = strings.ReplaceAll(out, "__", "_")
+	}
+	return strings.Trim(out, "_")
+}
+
+type tagCount struct {
+	tag   string
+	count int
+}
+
+func rankVocabulary(vocab map[string]int) []tagCount {
+	var out []tagCount
+	for t, c := range vocab {
+		out = append(out, tagCount{t, c})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].count != out[j].count {
+			return out[i].count > out[j].count
+		}
+		return out[i].tag < out[j].tag
+	})
+	return out
 }
 
 // ---------- shared I/O ----------
