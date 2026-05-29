@@ -126,7 +126,20 @@ Ollama uses its local HTTP endpoint and needs no API key.
 | `analysis/` | formal property analysis |
 | `schema/`, `sandbox/`, `qualitygate/`, `budget/` | supporting infrastructure |
 
-> TODO (you): one sentence on *why* `pkg/` is public — what's the stability promise vs `internal/`? Embedding-as-library? Compile-time plugins? This shapes how aggressive we can be when refactoring `internal/`.
+**Why `pkg/` is public.** It is the compile-time contract boundary: the
+domain types and extension points that `internal/` is built *on top of*.
+The dependency is strictly one-way — `pkg/` never imports `internal/`, while
+`internal/` imports `pkg/model` (58×), `pkg/spec` (13×), `pkg/dag` (6×). The
+load-bearing extension point is `pkg/spec` (the `Generator` interface + its
+`Register()` registry): new targets are compile-time plugins that implement
+`spec.Generator` and self-register via `init()` (see "Adding a new target").
+
+**Stability promise.** Aspirational, not yet guaranteed — the module is
+pre-1.0 with no semver tags, so the public surface can still change. The
+practical rule for refactoring: treat `pkg/` API changes as breaking (update
+all `internal/` call sites in the same change) and keep `internal/` free to
+churn. Anything imported across the `pkg/`↔`internal/` line goes through
+`pkg/`; never make `pkg/` reach back into `internal/`.
 
 ### `internal/` — implementation details
 
