@@ -15,7 +15,7 @@ const (
 	defaultBaseURL          = "https://api.anthropic.com/v1/messages"
 	anthropicVersion        = "2023-06-01"
 	anthropicDefaultModel   = "claude-sonnet-4-20250514"
-	anthropicMaxTok         = 8192
+	anthropicMaxTok         = 16384
 	anthropicDefaultTimeout = 120 * time.Second
 )
 
