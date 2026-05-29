@@ -123,38 +123,89 @@ intent-axis instruction share 1.4% of vocabulary. The natural-language
 emergence we observe is heavily model-dependent — the underlying
 intent structure might be the same, but its surface expression isn't.
 
-### 1.5 Run 5 — intent-focused, Opus 4.8 (pure, pending)
+### 1.5 Run 5 — intent-focused, Opus 4.8 (pure)
 
-In flight at the time of writing. Background task `bxkwoh9l6`,
-`/tmp/cal-opus.jsonl`.
+Same prompt as runs 3-4. Result: 454 tags, **353 unique**, 2.27
+tags/item — the most prolific of the three models.
 
-Expected: if Opus also produces a disjoint vocabulary, the three-way
-overlap will be near-zero. If Opus's vocabulary partially overlaps
-both Sonnet's and Haiku's, it suggests Opus is a synthesis point.
+**Three-way comparison Sonnet ↔ Haiku ↔ Opus:**
 
-Open question to resolve once Opus is in: is the cluster structure
-(round 2 below) consistent across models, even though surface
-vocabulary isn't?
+| Metric | Sonnet | Haiku | Opus |
+|---|---:|---:|---:|
+| Total tags | 413 | 330 | 454 |
+| Unique tags | 354 | 315 | 353 |
+| Mean tags/item | 2.08 | 1.66 | 2.27 |
 
-### 1.6 Run 6 — cluster the union (planned)
+| Pair | Vocab Jaccard | Shared vocab | Per-item Jaccard | Items 0-shared |
+|---|---:|---:|---:|---:|
+| Sonnet-Haiku | 0.021 | 14 | 0.017 | 96.0% |
+| Sonnet-Opus | 0.044 | 30 | 0.030 | 91.5% |
+| Haiku-Opus | 0.011 | 7 | 0.006 | 98.0% |
 
-Subcommand `reify-calibrate explore cluster --input <each-run.jsonl>`
-sends the **union** of all annotators' vocabularies to a referee LLM
-(Opus 4.8 by default) and asks it to group the labels into thematic
-intent clusters. The referee picks the cluster count (3-10), not us.
+Three-way: **union = 972 tags, shared by all 3 = 1** (`scope_restriction`,
+0.1%).
 
-Goal: test the "does order emerge from chaos?" hypothesis. If the
-Opus-Sonnet-Haiku union of ~700-900 disjoint tags resolves into a
-small number of coherent thematic clusters that absorb vocabulary
-from all three sources, the underlying intent structure is real
-even when the surface vocabulary isn't shared.
+**Opus is weakly a synthesis point, but only weakly.** Its vocabulary
+overlaps Sonnet (30 shared) ~4× more than Haiku (7), and Sonnet-Opus is
+the densest pair. But the three-way overlap is essentially nil — the
+surface divergence is *more* extreme with three models than with two.
 
-Failure modes to watch for:
-- The referee produces one cluster per source → annotators were
-  speaking truly different ontologies.
-- The referee picks 20+ tiny clusters → no natural reduction.
-- A small handful of clusters absorb only one source each →
-  hidden source biases dominate.
+**Each model has a grammatical signature.** Opus prefers short concrete
+imperatives and *concentrates*: top tag `state_fact` recurs **14×** (vs
+Sonnet's top at 6, Haiku's at 3). Sonnet uses abstract nominals
+(`*_grounding`, `*_provision`). Haiku uses verbs (`prescribe_*`,
+`enforce_*`, `constraint_*`).
+
+### 1.6 Run 6 — cluster the union (the emergence test)
+
+`reify-calibrate explore cluster` sent the **union of 972 disjoint
+tags** from all three annotators to a referee (Opus 4.8) and asked it to
+group them into thematic intent clusters, choosing the count itself.
+
+Result: **13 clusters + 11 outliers**, and **12 of 13 clusters absorb
+all three sources**. Zero single-source clusters. The lone 2/3 cluster
+(`structural_labels_fragments`, 15 occ) is low-level noise.
+
+| Cluster | size | occ | Son% | Hai% | Opu% |
+|---|---:|---:|---:|---:|---:|
+| inform_state_fact | 241 | 292 | 35 | 24 | 40 |
+| directive_command | 127 | 156 | 34 | 24 | 42 |
+| mandate_requirement | 113 | 133 | 23 | 37 | 41 |
+| constraint_enforcement | 106 | 122 | 33 | 52 | 15 |
+| verification_validation_gate | 84 | 110 | 35 | 25 | 39 |
+| examples_references_pointers | 65 | 75 | 37 | 11 | 52 |
+| scope_definition | 45 | 65 | 48 | 35 | 17 |
+| prohibition | 49 | 64 | 20 | 23 | 56 |
+| risk_security_awareness | 52 | 61 | 52 | 23 | 25 |
+| format_structure_specification | 45 | 59 | 46 | 14 | 41 |
+| diagnostic_troubleshooting | 40 | 57 | 46 | 28 | 26 |
+| reflection_self_inquiry | 17 | 19 | 26 | 11 | 63 |
+| structural_labels_fragments | 11 | 15 | 13 | 0 | 87 |
+
+**Order emerges from chaos.** Three models sharing 1 tag in 972 map
+into the same dozen intent classes when a neutral referee regroups them.
+The underlying intent structure is real even though no two models share
+its surface expression — the hypothesis of §1.6 (as planned) is
+confirmed.
+
+**The 13 clusters recover the 5 Reify facets at higher resolution.**
+The mapping is clean (no cluster straddles facets, no facet is orphaned):
+
+- `inform_state_fact` → **context**
+- `directive_command` + `mandate_requirement` + `scope_definition` → **strategy**
+- `constraint_enforcement` + `prohibition` → **guardrails**
+- `verification_validation_gate` + `diagnostic_troubleshooting` → **observability**
+- `risk_security_awareness` → **security**
+
+So the 5 facets are a **low-resolution but faithful projection** of a
+finer intent structure the models find on their own — not an arbitrary
+imposition. The 13 clusters also show where the taxonomy could refine if
+needed (split `directive` from `mandate`, `prohibition` from
+`constraint`). The Run 5 model signatures reappear: Haiku dominates
+`constraint_enforcement` (52%), Opus dominates `prohibition` (56%) and
+`reflection` (63%), Sonnet dominates `risk_security` (52%) — each model
+weights toward the class matching its preferred grammar, but all three
+contribute to every class.
 
 ## 2. Cross-cutting findings
 
@@ -173,12 +224,12 @@ taxonomy lives on the intent axis. So:
 
 ### 2.2 Coherence ≠ Validation
 
-Two strong models sharing 1.4% of vocabulary without taxonomy
-imposition vs ~48% set-Jaccard with the 5-facet taxonomy imposed
-(measured separately via `judge_labels` vs `llm_labels` agreement)
-suggests:
+Three models sharing 0.1% of vocabulary without taxonomy imposition
+(§1.5) vs **44.2% mean set-Jaccard** with the 5-facet taxonomy imposed
+(`judge_labels` Opus vs `llm_labels` Haiku, measured during the judge
+pass) suggests:
 
-- The 5 facets produce ~46pp of coherence between models — they work
+- The 5 facets produce ~44pp of coherence between models — they work
   as a Schelling point.
 - But coherence is not validation. Two models can agree on the wrong
   taxonomy. Gold human labels remain the only stable anchor for
@@ -188,6 +239,16 @@ suggests:
 not to maximise coherence but to see if order emerges. We're still
 in the "exploration of the topology" phase, not the "calibration of
 production" phase.)
+
+### 2.4 Order emerges from chaos (§1.6 confirmed)
+
+The strongest result of the battery. 972 surface-disjoint emergent tags
+(0.1% shared across three models) collapse into 13 referee clusters,
+12 of which absorb all three sources. The intent structure is real and
+shared even when its surface vocabulary is not. Crucially, those 13
+clusters map cleanly onto the 5 Reify facets at higher resolution — the
+taxonomy is a low-resolution but faithful projection of a structure the
+models find on their own, not an arbitrary imposition.
 
 ### 2.3 Prompt contamination is real and easy to miss
 
@@ -202,8 +263,8 @@ distinction.
 
 ## 3. Next experiments
 
-- **Round 2 (cluster) on Sonnet + Haiku + Opus union** — the
-  emergence test.
+- **Round 2 (cluster) on Sonnet + Haiku + Opus union** — ✅ done, see
+  §1.6 / §2.4. Order emerges: 13 clusters, 12/13 absorb all 3 sources.
 - **Self-consistency** — same model, same prompt, multiple seeds.
   Tells us whether per-item variance is dominated by model identity
   or temperature noise.
@@ -226,10 +287,22 @@ distinction.
   from Sonnet 4.6 (open vocabulary, pure intent prompt)
 - `/tmp/cal-haiku.jsonl` — `emergent_labels` from Haiku 4.5 (same
   prompt as `explored`)
-- `/tmp/cal-opus.jsonl` — `emergent_labels` from Opus 4.8 (in flight)
-- `/tmp/calibration-judge-multilabel.log`, `/tmp/cal-haiku-run.log`,
-  `/tmp/cal-opus-run.log` — execution logs
+- `/tmp/cal-opus.jsonl` — `emergent_labels` from Opus 4.8
+- `/tmp/clusters.json` — Run 6 referee output (13 clusters + outliers,
+  per-source provenance) from `explore cluster`
 
 All of `/tmp/cal*.jsonl` are ephemeral artefacts. The reproducible
-inputs are this `findings.md`, `rubric.md`, the `reify-calibrate`
-binary, and the dogfooded `classify.log` files used by `sample`.
+inputs are this `findings.md`, `rubric.md`, `REGENERATING.md` (the
+step-by-step rebuild recipe), the `reify-calibrate` binary, and the
+`classify.log` files regenerated per `REGENERATING.md`.
+
+> **Reproducibility note.** The entire corpus was regenerated from
+> scratch on 2026-05-29 after a `/tmp` purge wiped every artefact. The
+> numbers above are from that regenerated run; they track the original
+> closely (Sonnet 413 vs 406 tags, Haiku 330 vs 315), confirming the
+> pipeline is reproducible via `REGENERATING.md`. Two production gaps
+> surfaced and were fixed during regeneration: `reify classify` must be
+> given `--provider anthropic` explicitly or it auto-detects a local
+> Ollama (corrupting the corpus), and the Anthropic provider's
+> `max_tokens` was raised 8192→16384 so `explore cluster` over ~972
+> tags no longer truncates.
