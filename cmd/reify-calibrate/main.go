@@ -45,6 +45,7 @@ See docs/calibration/rubric.md for the canonical facet definitions.`,
 	root.AddCommand(judgeCmd())
 	root.AddCommand(scoreCmd())
 	root.AddCommand(exploreCmd())
+	root.AddCommand(selfConsistencyCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -1243,6 +1244,390 @@ func max1(n int) int {
 		return 1
 	}
 	return n
+}
+
+// ---------- self-consistency ----------
+
+// selfConsistencyCmd runs the same closed-vocabulary judge prompt N times
+// over a corpus and measures how stable each item's labelset is across
+// runs. The goal is to separate run-to-run noise from genuine model
+// commitment: an item whose facet set never changes across N runs is
+// stably judged; one that flips facets every run is on a decision
+// boundary the model is unsure about.
+//
+// v1 measures the judge (closed 5-facet vocabulary). The open-coding
+// tagger is deliberately not supported here: emergent vocabularies are
+// near-disjoint even between two runs of the same model (~1% Jaccard, see
+// findings.md §1.4), so a "modal labelset" is undefined and any stability
+// number would be dominated by surface-wording jitter, not intent
+// disagreement.
+//
+// Temperature note: the Anthropic provider sends no temperature (API
+// default = 1.0) and the Provider interface exposes no knob, so this
+// measures total run-to-run variance at the production setting. It does
+// NOT decompose temperature-noise vs model-identity — that needs a
+// temperature parameter plumbed through llm.Provider first.
+func selfConsistencyCmd() *cobra.Command {
+	var input, output string
+	var providerFlag, modelFlag string
+	var runs, concurrency int
+
+	cmd := &cobra.Command{
+		Use:   "selfconsistency",
+		Short: "Run the judge N times and measure per-item labelset stability across runs",
+		Long: `selfconsistency sends each corpus item through the closed-vocabulary
+judge prompt N times (same model, same settings) and reports how stable
+the resulting facet labelset is across runs.
+
+Three orthogonal stability metrics are reported because "consistent"
+is ambiguous:
+
+  - perfect-stable rate: fraction of items whose labelset is identical
+    in all N runs (binary: did it ever change?).
+  - modal agreement: mean fraction of runs that match the item's modal
+    (most frequent) labelset (how dominant is the plurality answer?).
+  - mean pairwise Jaccard: average set overlap between every pair of
+    runs (graded: an item that flips one facet occasionally scores high
+    here but 0 on perfect-stable).
+
+Per-facet flip rates show which facets are the unstable ones.
+
+This measures the judge only (closed vocabulary). See the command help
+for why open-coding tags are excluded.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSelfConsistency(input, output, providerFlag, modelFlag, runs, concurrency)
+		},
+	}
+
+	cmd.Flags().StringVarP(&input, "input", "i", "", "input JSONL corpus (required)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "output JSON path for the full report (optional)")
+	cmd.Flags().StringVar(&providerFlag, "provider", "anthropic", "LLM provider (anthropic, openrouter, ollama)")
+	cmd.Flags().StringVar(&modelFlag, "model", "claude-opus-4-8", "model to test for self-consistency")
+	cmd.Flags().IntVarP(&runs, "runs", "n", 5, "number of repeated runs per item")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "parallel requests")
+	_ = cmd.MarkFlagRequired("input")
+	return cmd
+}
+
+// selfConsistencyReport is the persisted JSON output.
+type selfConsistencyReport struct {
+	Model            string                  `json:"model"`
+	Provider         string                  `json:"provider"`
+	Runs             int                     `json:"runs"`
+	Items            int                     `json:"items"`
+	Errors           int                     `json:"errors"`
+	PerfectStable    float64                 `json:"perfect_stable_rate"`
+	MeanModalAgree   float64                 `json:"mean_modal_agreement"`
+	MeanPairJaccard  float64                 `json:"mean_pairwise_jaccard"`
+	FacetFlipRate    map[classifier.Facet]float64 `json:"facet_flip_rate"`
+	PerItem          []itemConsistency       `json:"per_item"`
+}
+
+// itemConsistency holds the N run results and derived stability for one item.
+type itemConsistency struct {
+	ID            string     `json:"id"`
+	Text          string     `json:"text"`
+	Runs          [][]string `json:"runs"`
+	ModalLabels   []string   `json:"modal_labels"`
+	ModalAgree    float64    `json:"modal_agreement"`
+	PairJaccard   float64    `json:"pairwise_jaccard"`
+	PerfectStable bool       `json:"perfect_stable"`
+}
+
+func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, concurrency int) error {
+	if runs < 2 {
+		return fmt.Errorf("--runs must be >= 2 (self-consistency needs repeated runs)")
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+
+	items, err := readJSONL(input)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", input, err)
+	}
+	if len(items) == 0 {
+		return fmt.Errorf("corpus is empty")
+	}
+
+	provider, err := selectJudgeProvider(providerFlag, modelFlag)
+	if err != nil {
+		return fmt.Errorf("provider: %w", err)
+	}
+	fmt.Printf("Self-consistency: %s / %s, %d runs over %d items\n\n",
+		color.CyanString(providerFlag), modelFlag, runs, len(items))
+
+	header := judgePromptHeader()
+
+	// Each unit of work is one (item, run) pair, so all N*len(items) calls
+	// share the concurrency pool rather than serialising run-by-run.
+	type job struct{ item, run int }
+	type res struct {
+		item, run int
+		labels    []string
+		err       error
+	}
+	var jobs []job
+	for i := range items {
+		for r := 0; r < runs; r++ {
+			jobs = append(jobs, job{i, r})
+		}
+	}
+
+	results := make([][][]string, len(items))
+	for i := range results {
+		results[i] = make([][]string, runs)
+	}
+
+	var (
+		mu     sync.Mutex
+		done   int
+		errCnt int
+	)
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	resCh := make(chan res, len(jobs))
+
+	for _, j := range jobs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(j job) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			labels, jerr := judgeOne(provider, header, items[j.item])
+			resCh <- res{j.item, j.run, labels, jerr}
+			mu.Lock()
+			done++
+			if jerr != nil {
+				errCnt++
+			}
+			if done%50 == 0 || done == len(jobs) {
+				fmt.Fprintf(os.Stderr, "  progress %d/%d  errors=%d\n", done, len(jobs), errCnt)
+			}
+			mu.Unlock()
+		}(j)
+	}
+	wg.Wait()
+	close(resCh)
+	for r := range resCh {
+		if r.err == nil {
+			results[r.item][r.run] = r.labels
+		}
+	}
+
+	report := computeSelfConsistency(items, results, runs)
+	report.Model = modelFlag
+	report.Provider = providerFlag
+	report.Errors = errCnt
+
+	renderSelfConsistency(report)
+
+	if output != "" {
+		if err := writeJSON(output, report); err != nil {
+			return fmt.Errorf("write %s: %w", output, err)
+		}
+		fmt.Printf("\nFull report: %s\n", output)
+	}
+	return nil
+}
+
+// computeSelfConsistency derives stability metrics from the raw run
+// results. results[i][r] is the labelset item i produced on run r (nil on
+// error). Items with fewer than 2 successful runs are skipped (no pair to
+// compare). The aggregate rates are over the scored items only.
+func computeSelfConsistency(items []calibrateItem, results [][][]string, runs int) *selfConsistencyReport {
+	rep := &selfConsistencyReport{
+		Runs:          runs,
+		FacetFlipRate: map[classifier.Facet]float64{},
+	}
+
+	var (
+		perfectCount   int
+		modalAgreeSum  float64
+		pairJaccardSum float64
+		scored         int
+	)
+	// facetPresentRuns[f] = total successful runs considered; facetFlips[f]
+	// = runs where f's membership differs from the modal labelset.
+	facetConsidered := map[classifier.Facet]int{}
+	facetFlips := map[classifier.Facet]int{}
+
+	for i, runResults := range results {
+		var successful [][]string
+		for _, r := range runResults {
+			if r != nil {
+				successful = append(successful, r)
+			}
+		}
+		if len(successful) < 2 {
+			continue
+		}
+		scored++
+
+		modal := modalLabelset(successful)
+		modalSet := asSet(modal)
+
+		// Modal agreement: fraction of runs equal to the modal labelset.
+		matches := 0
+		for _, run := range successful {
+			if setsEqual(asSet(run), modalSet) {
+				matches++
+			}
+		}
+		modalAgree := float64(matches) / float64(len(successful))
+		modalAgreeSum += modalAgree
+
+		// Perfect stable: every run identical (modal agreement == 1).
+		perfect := matches == len(successful)
+		if perfect {
+			perfectCount++
+		}
+
+		// Mean pairwise Jaccard over all run pairs.
+		pj := meanPairwiseJaccard(successful)
+		pairJaccardSum += pj
+
+		// Per-facet flip accounting against the modal labelset.
+		for _, f := range classifier.AllFacets {
+			for _, run := range successful {
+				facetConsidered[f]++
+				if asSet(run)[f] != modalSet[f] {
+					facetFlips[f]++
+				}
+			}
+		}
+
+		rep.PerItem = append(rep.PerItem, itemConsistency{
+			ID:            items[i].ID,
+			Text:          truncate(items[i].Text, 80),
+			Runs:          successful,
+			ModalLabels:   modal,
+			ModalAgree:    modalAgree,
+			PairJaccard:   pj,
+			PerfectStable: perfect,
+		})
+	}
+
+	rep.Items = scored
+	if scored > 0 {
+		rep.PerfectStable = float64(perfectCount) / float64(scored)
+		rep.MeanModalAgree = modalAgreeSum / float64(scored)
+		rep.MeanPairJaccard = pairJaccardSum / float64(scored)
+	}
+	for _, f := range classifier.AllFacets {
+		rep.FacetFlipRate[f] = safeDiv(facetFlips[f], facetConsidered[f])
+	}
+	return rep
+}
+
+// modalLabelset returns the most frequent labelset across runs. Ties are
+// broken by the canonical AllFacets ordering of the set's signature so the
+// result is deterministic.
+func modalLabelset(runs [][]string) []string {
+	counts := map[string]int{}
+	repr := map[string][]string{}
+	for _, run := range runs {
+		key := labelsetKey(run)
+		counts[key]++
+		if _, ok := repr[key]; !ok {
+			repr[key] = canonicalFacets(run)
+		}
+	}
+	bestKey, bestCount := "", -1
+	for k, c := range counts {
+		if c > bestCount || (c == bestCount && k < bestKey) {
+			bestKey, bestCount = k, c
+		}
+	}
+	return repr[bestKey]
+}
+
+// labelsetKey is a canonical string signature of a facet set (valid facets
+// only, in AllFacets order) so two labelsets with the same members but
+// different ordering collapse to one key.
+func labelsetKey(labels []string) string {
+	return strings.Join(canonicalFacets(labels), ",")
+}
+
+// canonicalFacets returns the valid facets in `labels` in AllFacets order,
+// deduplicated.
+func canonicalFacets(labels []string) []string {
+	set := asSet(labels)
+	var out []string
+	for _, f := range classifier.AllFacets {
+		if set[f] {
+			out = append(out, string(f))
+		}
+	}
+	return out
+}
+
+// meanPairwiseJaccard averages jaccardSets over every unordered pair of
+// runs. With fewer than 2 runs it returns 1.0 (nothing to disagree on).
+func meanPairwiseJaccard(runs [][]string) float64 {
+	if len(runs) < 2 {
+		return 1.0
+	}
+	var sum float64
+	var pairs int
+	for i := 0; i < len(runs); i++ {
+		for j := i + 1; j < len(runs); j++ {
+			sum += jaccardSets(asSet(runs[i]), asSet(runs[j]))
+			pairs++
+		}
+	}
+	return sum / float64(pairs)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func renderSelfConsistency(r *selfConsistencyReport) {
+	bold := color.New(color.Bold).SprintFunc()
+	fmt.Println(bold("Self-consistency report"))
+	fmt.Printf("  model            : %s / %s\n", r.Provider, r.Model)
+	fmt.Printf("  runs per item    : %d\n", r.Runs)
+	fmt.Printf("  items scored     : %d", r.Items)
+	if r.Errors > 0 {
+		fmt.Printf("  (%s)", color.YellowString("%d call errors", r.Errors))
+	}
+	fmt.Println()
+	fmt.Println()
+	fmt.Printf("  perfect-stable rate   : %.1f%%  (labelset identical in all runs)\n", 100*r.PerfectStable)
+	fmt.Printf("  mean modal agreement  : %.1f%%  (runs matching the plurality answer)\n", 100*r.MeanModalAgree)
+	fmt.Printf("  mean pairwise Jaccard : %.3f   (graded set overlap between runs)\n", r.MeanPairJaccard)
+
+	fmt.Println()
+	fmt.Println(bold("  Per-facet flip rate") + " (vs modal labelset, higher = less stable):")
+	for _, f := range classifier.AllFacets {
+		fmt.Printf("    %-14s %.1f%%\n", abbreviateFacet(f), 100*r.FacetFlipRate[f])
+	}
+
+	// Highlight the least stable items.
+	if len(r.PerItem) > 0 {
+		unstable := make([]itemConsistency, len(r.PerItem))
+		copy(unstable, r.PerItem)
+		sort.Slice(unstable, func(i, j int) bool {
+			return unstable[i].PairJaccard < unstable[j].PairJaccard
+		})
+		n := 5
+		if n > len(unstable) {
+			n = len(unstable)
+		}
+		fmt.Println()
+		fmt.Println(bold("  Least stable items:"))
+		for _, it := range unstable[:n] {
+			if it.PerfectStable {
+				break // the rest are all stable
+			}
+			fmt.Printf("    J=%.2f modal=[%s]  %s\n",
+				it.PairJaccard, strings.Join(it.ModalLabels, " "), it.Text)
+		}
+	}
 }
 
 // ---------- explore (open coding) ----------
