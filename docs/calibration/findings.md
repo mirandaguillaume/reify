@@ -273,6 +273,62 @@ The per-facet ranking (finding above) is itself cross-model invariant:
 the intrinsically fuzzy boundary — a property of the taxonomy, not of
 any model. That boundary is the obvious target for few-shot anchoring.
 
+### 1.8 Run 8 — few-shot anchoring on the fuzzy boundary
+
+Run 7 located the instability (`strategy`↔`context`) and the model that
+suffers it (Haiku). Run 8 tests the fix: augment the judge prompt with
+worked contrastive examples on exactly that boundary, drawn verbatim
+from `rubric.md` §1.1/§1.2 (so they add demonstrations, not new policy),
+and re-measure self-consistency. Via `selfconsistency --fewshot`,
+Haiku, 200 items × 5 runs, 0 errors.
+
+**First attempt was on the wrong model.** Few-shot on the Opus *judge*
+(measured as Jaccard(judge,llm)) moved agreement +0.4pp — noise. Opus
+was already 90% perfect-stable (§1.7); it does not hesitate on this
+boundary, so examples add nothing. The experiment belongs on the weak
+model, measured by its own self-consistency.
+
+**Haiku, zero-shot vs few-shot (closed self-consistency):**
+
+| metric | zero-shot | few-shot | Δ |
+|---|---:|---:|---:|
+| perfect-stable | 69.5% | 75.0% | +5.5 |
+| modal agreement | 89.2% | 91.8% | +2.6 |
+| pairwise Jaccard | 0.895 | 0.906 | +0.012 |
+
+| facet flip rate | zero-shot | few-shot | Δ |
+|---|---:|---:|---:|
+| **context** (anchored) | 4.5% | 3.2% | **−1.3** |
+| **strategy** (anchored) | 4.8% | 3.2% | **−1.6** |
+| guardrails | 2.2% | 2.6% | +0.4 |
+| observability | 2.9% | 2.7% | −0.2 |
+| security | 0.6% | 1.2% | +0.6 |
+
+Three findings:
+
+1. **The effect is causal and localised.** The two anchored facets are
+   the only ones that drop meaningfully (−1.3, −1.6); the unanchored
+   facets move within noise. Anchoring `strategy`↔`context` stabilised
+   `strategy`↔`context` and nothing else — Run 7 picked the right target.
+
+2. **Real but modest.** +5.5pp perfect-stable does not lift Haiku to the
+   Sonnet/Opus plateau (~90%). A small `security` uptick (+0.6) is
+   consistent with prompt-length dilution from the longer preamble. Net
+   positive, not transformative.
+
+3. **Stability ≠ correctness — the open question.** Self-consistency
+   shows few-shot makes Haiku agree with *itself* more on the fuzzy
+   boundary. It cannot show whether Haiku is more *right*: a model can
+   stabilise toward the examples' framing without being correct. Only
+   gold labels (§3) separate "stabilises toward truth" from "stabilises
+   toward the demonstration". That is the prerequisite before porting
+   few-shot into the production `reify classify` prompt.
+
+**Cross-family is untested.** All of runs 1–8 are Anthropic
+(Haiku/Sonnet/Opus), so the few-shot effect could be family-specific.
+An OpenRouter cross-family check (GPT/Llama) was attempted but blocked
+by HTTP 402 (account credits exhausted). Open item.
+
 ## 2. Cross-cutting findings
 
 ### 2.1 Topical ⊥ Intent
@@ -336,15 +392,17 @@ distinction.
   vs Sonnet/Opus ~90% perfect-stable); open is a gradient (Jaccard
   0.079 → 0.238 → 0.343). The taxonomy absorbs surface noise 2.8–11.3×,
   most for the weakest model.
-- **Few-shot in `reify classify`** — use the rubric's examples (or
-  cluster exemplars from §1.6) as few-shot anchors in the production
-  classifier prompt. The §1.7 per-facet ranking says where it matters
-  most: the `strategy`↔`context` boundary is the intrinsically fuzzy
-  one, so anchor there first. Hypothesis: cross-model agreement under
-  the 5-facet taxonomy climbs from ~44% toward 70%+.
-- **Gold labelling** — the irreducible anchor. ~50-100 items labelled
-  by hand under rubric v1.1 multi-label, scored against every
-  classifier path with `reify-calibrate score`.
+- **Few-shot anchoring** — ✅ tested, see §1.8. Run 8 anchored the
+  `strategy`↔`context` boundary on Haiku: flip rate −1.3/−1.6pp,
+  perfect-stable +5.5pp, effect localised to the anchored facets.
+  Modest and stability-only — NOT yet ported to the production
+  `reify classify` prompt, pending a correctness check via gold labels.
+  Cross-family validation blocked (OpenRouter credits exhausted).
+- **Gold labelling** — the irreducible anchor, now the critical path:
+  it is the prerequisite for porting few-shot to production (separates
+  "stabilises toward truth" from "stabilises toward the examples").
+  ~50-100 items labelled by hand under rubric v1.1 multi-label, scored
+  against every classifier path with `reify-calibrate score`.
 
 ## 4. Files
 
@@ -363,6 +421,8 @@ distinction.
   (per-item runs, modal labels, facet flip rates) from `selfconsistency`
 - `/tmp/sc-open-<model>.json` — Run 7 open-mode reports (per-item raw
   tag runs, pairwise Jaccard) from `selfconsistency --open`
+- `/tmp/sc-haiku-fewshot.json` — Run 8 Haiku few-shot self-consistency
+  report (compare against `/tmp/sc-claude-haiku-4-5.json` for the delta)
 
 All of `/tmp/cal*.jsonl` are ephemeral artefacts. The reproducible
 inputs are this `findings.md`, `rubric.md`, `REGENERATING.md` (the
