@@ -20,3 +20,16 @@ func isViolated(changedPaths []string, scope string) bool {
 func isTaskSolved(targetContent, marker string) bool {
 	return marker != "" && strings.Contains(targetContent, marker)
 }
+
+// parseChangedPaths turns `git diff --name-only` output into a trimmed,
+// non-empty path list.
+func parseChangedPaths(nameOnly string) []string {
+	var out []string
+	for _, line := range strings.Split(nameOnly, "\n") {
+		p := strings.TrimSpace(line)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
