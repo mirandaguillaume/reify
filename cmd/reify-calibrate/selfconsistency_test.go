@@ -125,3 +125,68 @@ func TestTruncate(t *testing.T) {
 	assert.Equal(t, "abc", truncate("abc", 5))
 	assert.Equal(t, "abcde…", truncate("abcdefgh", 5))
 }
+
+func TestRawJaccard(t *testing.T) {
+	// Raw strings, no facet filtering, no normalisation.
+	a := map[string]bool{"risk_flag": true, "scope": true}
+	b := map[string]bool{"risk_flag": true}
+	assert.InDelta(t, 0.5, rawJaccard(a, b), 1e-9) // 1 shared / 2 union
+
+	// Surface-distinct near-synonyms do NOT match (the whole point of "raw").
+	c := map[string]bool{"risk_flag": true}
+	d := map[string]bool{"risk_flagging": true}
+	assert.InDelta(t, 0.0, rawJaccard(c, d), 1e-9)
+
+	// Both empty => 1.0
+	assert.InDelta(t, 1.0, rawJaccard(map[string]bool{}, map[string]bool{}), 1e-9)
+
+	// Identical => 1.0
+	assert.InDelta(t, 1.0, rawJaccard(a, a), 1e-9)
+}
+
+func TestMeanPairwiseJaccardRaw(t *testing.T) {
+	// Fewer than 2 runs => 1.0
+	assert.InDelta(t, 1.0, meanPairwiseJaccardRaw([][]string{{"a"}}), 1e-9)
+
+	// Identical runs => 1.0
+	identical := [][]string{{"risk", "scope"}, {"risk", "scope"}, {"scope", "risk"}}
+	assert.InDelta(t, 1.0, meanPairwiseJaccardRaw(identical), 1e-9)
+
+	// Disjoint runs => 0
+	disjoint := [][]string{{"a"}, {"b"}, {"c"}}
+	assert.InDelta(t, 0.0, meanPairwiseJaccardRaw(disjoint), 1e-9)
+
+	// Within-run duplicates are deduped before comparison.
+	dup := [][]string{{"a", "a", "b"}, {"a", "b"}}
+	assert.InDelta(t, 1.0, meanPairwiseJaccardRaw(dup), 1e-9)
+}
+
+func TestComputeOpenConsistency(t *testing.T) {
+	items := []calibrateItem{{ID: "stable", Text: "x"}, {ID: "noisy", Text: "y"}}
+	results := [][][]string{
+		// item "stable": identical tags across 3 runs => J=1
+		{{"risk_flag"}, {"risk_flag"}, {"risk_flag"}},
+		// item "noisy": all-disjoint => J=0, counts as zero-overlap
+		{{"a"}, {"b"}, {"c"}},
+	}
+	rep := computeOpenConsistency(items, results, 3)
+	assert.Equal(t, 2, rep.Items)
+	// mean of (1.0, 0.0) = 0.5
+	assert.InDelta(t, 0.5, rep.MeanPairJaccard, 1e-9)
+	// one of two items had zero overlap
+	assert.InDelta(t, 0.5, rep.ZeroOverlapRate, 1e-9)
+	// each run emitted exactly 1 tag
+	assert.InDelta(t, 1.0, rep.MeanTagsPerRun, 1e-9)
+}
+
+func TestComputeOpenConsistencySkipsInsufficientRuns(t *testing.T) {
+	items := []calibrateItem{{ID: "a", Text: "x"}, {ID: "b", Text: "y"}}
+	results := [][][]string{
+		{{"tag"}, nil, nil},       // only 1 successful run => skipped
+		{{"tag"}, {"tag"}, nil},   // 2 successful => scored
+	}
+	rep := computeOpenConsistency(items, results, 3)
+	assert.Equal(t, 1, rep.Items)
+	assert.Len(t, rep.PerItem, 1)
+	assert.Equal(t, "b", rep.PerItem[0].ID)
+}

@@ -1271,31 +1271,36 @@ func selfConsistencyCmd() *cobra.Command {
 	var input, output string
 	var providerFlag, modelFlag string
 	var runs, concurrency int
+	var open bool
 
 	cmd := &cobra.Command{
 		Use:   "selfconsistency",
-		Short: "Run the judge N times and measure per-item labelset stability across runs",
-		Long: `selfconsistency sends each corpus item through the closed-vocabulary
-judge prompt N times (same model, same settings) and reports how stable
-the resulting facet labelset is across runs.
+		Short: "Run the same model N times and measure per-item stability across runs",
+		Long: `selfconsistency sends each corpus item to the same model N times (same
+prompt, same settings) and reports how stable the result is across runs.
+It isolates run-to-run variance at a fixed model, complementing the
+cross-model divergence measured elsewhere.
 
-Three orthogonal stability metrics are reported because "consistent"
-is ambiguous:
+Two modes:
 
+CLOSED (default) — the 5-facet judge prompt. Reports three metrics
+because "consistent" is ambiguous:
   - perfect-stable rate: fraction of items whose labelset is identical
-    in all N runs (binary: did it ever change?).
-  - modal agreement: mean fraction of runs that match the item's modal
-    (most frequent) labelset (how dominant is the plurality answer?).
-  - mean pairwise Jaccard: average set overlap between every pair of
-    runs (graded: an item that flips one facet occasionally scores high
-    here but 0 on perfect-stable).
+    in all N runs.
+  - modal agreement: mean fraction of runs matching the modal labelset.
+  - mean pairwise Jaccard: average set overlap between run pairs.
+Plus per-facet flip rates showing which facets are unstable.
 
-Per-facet flip rates show which facets are the unstable ones.
-
-This measures the judge only (closed vocabulary). See the command help
-for why open-coding tags are excluded.`,
+OPEN (--open) — the open-coding tagger (no facet taxonomy). Each run
+invents its own snake_case tags, so modal labelset and facet flips are
+undefined; only mean pairwise Jaccard on the raw tag sets is reported.
+This answers: when the SAME model tags the SAME item twice, how much of
+its emergent vocabulary repeats? Compare against the cross-model
+emergent Jaccard (~1.4%, findings.md §1.4): if same-model run-to-run is
+also near-zero, vocabulary divergence is generation noise; if it is
+high, the divergence is a model signature.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSelfConsistency(input, output, providerFlag, modelFlag, runs, concurrency)
+			return runSelfConsistency(input, output, providerFlag, modelFlag, runs, concurrency, open)
 		},
 	}
 
@@ -1305,6 +1310,7 @@ for why open-coding tags are excluded.`,
 	cmd.Flags().StringVar(&modelFlag, "model", "claude-opus-4-8", "model to test for self-consistency")
 	cmd.Flags().IntVarP(&runs, "runs", "n", 5, "number of repeated runs per item")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "parallel requests")
+	cmd.Flags().BoolVar(&open, "open", false, "open-coding mode: tag with free vocabulary, report raw-tag Jaccard only")
 	_ = cmd.MarkFlagRequired("input")
 	return cmd
 }
@@ -1334,7 +1340,7 @@ type itemConsistency struct {
 	PerfectStable bool       `json:"perfect_stable"`
 }
 
-func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, concurrency int) error {
+func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, concurrency int, open bool) error {
 	if runs < 2 {
 		return fmt.Errorf("--runs must be >= 2 (self-consistency needs repeated runs)")
 	}
@@ -1354,10 +1360,23 @@ func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, con
 	if err != nil {
 		return fmt.Errorf("provider: %w", err)
 	}
-	fmt.Printf("Self-consistency: %s / %s, %d runs over %d items\n\n",
-		color.CyanString(providerFlag), modelFlag, runs, len(items))
+	mode := "closed (judge)"
+	if open {
+		mode = "open (emergent tags)"
+	}
+	fmt.Printf("Self-consistency [%s]: %s / %s, %d runs over %d items\n\n",
+		mode, color.CyanString(providerFlag), modelFlag, runs, len(items))
 
-	header := judgePromptHeader()
+	// labelFn produces one run's labels for an item. Closed mode uses the
+	// 5-facet judge; open mode uses the open-coding tagger.
+	var labelFn func(calibrateItem) ([]string, error)
+	if open {
+		header := emergentTagPromptHeader()
+		labelFn = func(it calibrateItem) ([]string, error) { return emergentTagOne(provider, header, it) }
+	} else {
+		header := judgePromptHeader()
+		labelFn = func(it calibrateItem) ([]string, error) { return judgeOne(provider, header, it) }
+	}
 
 	// Each unit of work is one (item, run) pair, so all N*len(items) calls
 	// share the concurrency pool rather than serialising run-by-run.
@@ -1380,9 +1399,10 @@ func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, con
 	}
 
 	var (
-		mu     sync.Mutex
-		done   int
-		errCnt int
+		mu      sync.Mutex
+		done    int
+		errCnt  int
+		lastErr error
 	)
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -1394,15 +1414,23 @@ func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, con
 		go func(j job) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			labels, jerr := judgeOne(provider, header, items[j.item])
+			labels, jerr := labelFn(items[j.item])
 			resCh <- res{j.item, j.run, labels, jerr}
 			mu.Lock()
 			done++
 			if jerr != nil {
 				errCnt++
+				lastErr = jerr
 			}
 			if done%50 == 0 || done == len(jobs) {
-				fmt.Fprintf(os.Stderr, "  progress %d/%d  errors=%d\n", done, len(jobs), errCnt)
+				// Surface the most recent error text alongside the count so a
+				// run that silently bleeds calls (e.g. HTTP 529 overload) is
+				// diagnosable without a separate probe.
+				if errCnt > 0 {
+					fmt.Fprintf(os.Stderr, "  progress %d/%d  errors=%d  last: %v\n", done, len(jobs), errCnt, lastErr)
+				} else {
+					fmt.Fprintf(os.Stderr, "  progress %d/%d  errors=%d\n", done, len(jobs), errCnt)
+				}
 			}
 			mu.Unlock()
 		}(j)
@@ -1413,6 +1441,21 @@ func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, con
 		if r.err == nil {
 			results[r.item][r.run] = r.labels
 		}
+	}
+
+	if open {
+		report := computeOpenConsistency(items, results, runs)
+		report.Model = modelFlag
+		report.Provider = providerFlag
+		report.Errors = errCnt
+		renderOpenConsistency(report)
+		if output != "" {
+			if err := writeJSON(output, report); err != nil {
+				return fmt.Errorf("write %s: %w", output, err)
+			}
+			fmt.Printf("\nFull report: %s\n", output)
+		}
+		return nil
 	}
 
 	report := computeSelfConsistency(items, results, runs)
@@ -1584,6 +1627,158 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// ---------- open-coding self-consistency ----------
+
+// openConsistencyReport is the persisted output for --open mode. Facet
+// metrics are absent by construction: emergent tags are free vocabulary,
+// so there is no modal labelset or per-facet flip to compute.
+type openConsistencyReport struct {
+	Model           string             `json:"model"`
+	Provider        string             `json:"provider"`
+	Runs            int                `json:"runs"`
+	Items           int                `json:"items"`
+	Errors          int                `json:"errors"`
+	MeanPairJaccard float64            `json:"mean_pairwise_jaccard"`
+	ZeroOverlapRate float64            `json:"zero_overlap_rate"`
+	MeanTagsPerRun  float64            `json:"mean_tags_per_run"`
+	PerItem         []openItemFreq     `json:"per_item"`
+}
+
+// openItemFreq holds one item's run tag sets and its run-to-run overlap.
+type openItemFreq struct {
+	ID          string     `json:"id"`
+	Text        string     `json:"text"`
+	Runs        [][]string `json:"runs"`
+	PairJaccard float64    `json:"pairwise_jaccard"`
+}
+
+// computeOpenConsistency measures raw-tag run-to-run overlap. No
+// normalisation: "risk_flag" and "risk_flagging" are distinct, so this
+// is a SURFACE-stability measure (does the model reuse the same strings?).
+// Items with fewer than 2 successful runs are skipped.
+func computeOpenConsistency(items []calibrateItem, results [][][]string, runs int) *openConsistencyReport {
+	rep := &openConsistencyReport{Runs: runs}
+	var (
+		pairJaccardSum float64
+		zeroOverlap    int
+		tagSum         int
+		tagRuns        int
+		scored         int
+	)
+	for i, runResults := range results {
+		var successful [][]string
+		for _, r := range runResults {
+			if r != nil {
+				successful = append(successful, r)
+			}
+		}
+		if len(successful) < 2 {
+			continue
+		}
+		scored++
+		for _, run := range successful {
+			tagSum += len(run)
+			tagRuns++
+		}
+		pj := meanPairwiseJaccardRaw(successful)
+		pairJaccardSum += pj
+		if pj == 0 {
+			zeroOverlap++
+		}
+		rep.PerItem = append(rep.PerItem, openItemFreq{
+			ID:          items[i].ID,
+			Text:        truncate(items[i].Text, 80),
+			Runs:        successful,
+			PairJaccard: pj,
+		})
+	}
+	rep.Items = scored
+	if scored > 0 {
+		rep.MeanPairJaccard = pairJaccardSum / float64(scored)
+		rep.ZeroOverlapRate = float64(zeroOverlap) / float64(scored)
+	}
+	if tagRuns > 0 {
+		rep.MeanTagsPerRun = float64(tagSum) / float64(tagRuns)
+	}
+	return rep
+}
+
+// meanPairwiseJaccardRaw averages Jaccard over run pairs using the raw tag
+// strings (no facet filtering, no normalisation). Dedups within a run.
+func meanPairwiseJaccardRaw(runs [][]string) float64 {
+	if len(runs) < 2 {
+		return 1.0
+	}
+	sets := make([]map[string]bool, len(runs))
+	for i, run := range runs {
+		s := map[string]bool{}
+		for _, t := range run {
+			s[t] = true
+		}
+		sets[i] = s
+	}
+	var sum float64
+	var pairs int
+	for i := 0; i < len(sets); i++ {
+		for j := i + 1; j < len(sets); j++ {
+			sum += rawJaccard(sets[i], sets[j])
+			pairs++
+		}
+	}
+	return sum / float64(pairs)
+}
+
+func rawJaccard(a, b map[string]bool) float64 {
+	if len(a) == 0 && len(b) == 0 {
+		return 1.0
+	}
+	inter := 0
+	for k := range a {
+		if b[k] {
+			inter++
+		}
+	}
+	union := len(a) + len(b) - inter
+	if union == 0 {
+		return 1.0
+	}
+	return float64(inter) / float64(union)
+}
+
+func renderOpenConsistency(r *openConsistencyReport) {
+	bold := color.New(color.Bold).SprintFunc()
+	fmt.Println(bold("Open-coding self-consistency report"))
+	fmt.Printf("  model            : %s / %s\n", r.Provider, r.Model)
+	fmt.Printf("  runs per item    : %d\n", r.Runs)
+	fmt.Printf("  items scored     : %d", r.Items)
+	if r.Errors > 0 {
+		fmt.Printf("  (%s)", color.YellowString("%d call errors", r.Errors))
+	}
+	fmt.Println()
+	fmt.Println()
+	fmt.Printf("  mean pairwise Jaccard : %.3f   (raw-tag overlap between runs of the SAME model)\n", r.MeanPairJaccard)
+	fmt.Printf("  zero-overlap rate     : %.1f%%  (items where two runs shared NO tag)\n", 100*r.ZeroOverlapRate)
+	fmt.Printf("  mean tags per run     : %.2f\n", r.MeanTagsPerRun)
+	fmt.Println()
+	fmt.Println(color.New(color.Faint).Sprint("  Compare: cross-model emergent Jaccard ≈ 1.4% (findings.md §1.4)."))
+	fmt.Println(color.New(color.Faint).Sprint("  High same-model Jaccard => vocabulary divergence is a model signature, not noise."))
+
+	if len(r.PerItem) > 0 {
+		stable := make([]openItemFreq, len(r.PerItem))
+		copy(stable, r.PerItem)
+		sort.Slice(stable, func(i, j int) bool { return stable[i].PairJaccard > stable[j].PairJaccard })
+		n := 5
+		if n > len(stable) {
+			n = len(stable)
+		}
+		fmt.Println()
+		fmt.Println(bold("  Most self-consistent items:"))
+		for _, it := range stable[:n] {
+			fmt.Printf("    J=%.2f  %s\n", it.PairJaccard, it.Text)
+		}
+	}
 }
 
 func renderSelfConsistency(r *selfConsistencyReport) {
