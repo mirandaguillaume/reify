@@ -58,9 +58,18 @@ func runAttempt(f *Fixture, rule, model, effort string) (*AttemptResult, error) 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// Run the container as the HOST uid/gid so files the agent writes are
+	// owned by the host user — a clean `git diff` afterwards, and no
+	// dubious-ownership warnings. HOME=/tmp gives claude a writable home
+	// under that uid. claude --dangerously-skip-permissions refuses uid 0,
+	// which is the other reason we must not run as the image's root.
+	userArg := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+
 	// --dangerously-skip-permissions: safe inside the throwaway container.
 	// --bare: the fixture rule is the ONLY instruction context.
 	docker := exec.CommandContext(ctx, "docker", "run", "--rm",
+		"--user", userArg,
+		"-e", "HOME=/tmp",
 		"-v", work+":/work",
 		"-e", "ANTHROPIC_API_KEY",
 		sandboxImage,

@@ -23,4 +23,11 @@ func TestRunAttemptAbsentMayViolate(t *testing.T) {
 	require.NotNil(t, res)
 	t.Logf("absent run: violated=%v solved=%v changed=%v err=%v",
 		res.Violated, res.Solved, res.ChangedPaths, res.AgentError)
+
+	// The brick must run the agent for real: a successful attempt produces
+	// no agent error and actually changes the repo. (Outcome values are
+	// stochastic, but the agent must have *acted* — an empty diff with no
+	// error would mean the sandbox silently did nothing.)
+	require.False(t, res.AgentError, "agent must run without a container/CLI error")
+	require.NotEmpty(t, res.ChangedPaths, "agent must have edited the repo")
 }
