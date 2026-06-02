@@ -8,5 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /work
+# Run as the HOST uid via `docker run --user` so files the agent writes
+# are owned by the host user (clean git diff, no dubious-ownership).
+# claude --dangerously-skip-permissions refuses uid 0, so the caller MUST
+# pass --user <non-root-host-uid> and -e HOME=/tmp (a writable home).
 # ANTHROPIC_API_KEY is passed at run time via `docker run -e`.
-# No network egress beyond the Anthropic API is required.
