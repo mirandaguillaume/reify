@@ -297,6 +297,7 @@ func judgeCmd() *cobra.Command {
 	var providerFlag, modelFlag string
 	var concurrencyFlag int
 	var force bool
+	var fewshot bool
 
 	cmd := &cobra.Command{
 		Use:   "judge",
@@ -312,9 +313,15 @@ share whatever bias is present.
 
 To avoid in-family agreement bias, prefer a judge model from a different
 family than the model(s) being evaluated. By default the strongest Anthropic
-model is used; override with --judge-provider/--judge-model.`,
+model is used; override with --judge-provider/--judge-model.
+
+With --fewshot the prompt is augmented with worked contrastive examples
+on the strategy<->context boundary (the one self-consistency Run 7 found
+intrinsically fuzzy). Run the judge twice — zero-shot and --fewshot, to
+separate output files — and compare mean Jaccard(judge,llm) to test
+whether few-shot anchoring raises cross-model agreement.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runJudge(input, output, providerFlag, modelFlag, concurrencyFlag, force)
+			return runJudge(input, output, providerFlag, modelFlag, concurrencyFlag, force, fewshot)
 		},
 	}
 
@@ -324,11 +331,12 @@ model is used; override with --judge-provider/--judge-model.`,
 	cmd.Flags().StringVar(&modelFlag, "judge-model", "claude-opus-4-20250514", "judge model name (use the strongest from a different family than the evaluated model)")
 	cmd.Flags().IntVar(&concurrencyFlag, "concurrency", 8, "parallel judge requests")
 	cmd.Flags().BoolVar(&force, "force", false, "re-judge items that already have a judge_label")
+	cmd.Flags().BoolVar(&fewshot, "fewshot", false, "augment the prompt with contrastive strategy<->context examples")
 	_ = cmd.MarkFlagRequired("input")
 	return cmd
 }
 
-func runJudge(input, output, providerFlag, modelFlag string, concurrency int, force bool) error {
+func runJudge(input, output, providerFlag, modelFlag string, concurrency int, force, fewshot bool) error {
 	if output == "" {
 		output = input
 	}
@@ -348,9 +356,16 @@ func runJudge(input, output, providerFlag, modelFlag string, concurrency int, fo
 	if err != nil {
 		return fmt.Errorf("judge provider: %w", err)
 	}
-	fmt.Printf("Judge: %s / %s\n", color.CyanString(providerFlag), modelFlag)
+	mode := "zero-shot"
+	if fewshot {
+		mode = "few-shot"
+	}
+	fmt.Printf("Judge: %s / %s [%s]\n", color.CyanString(providerFlag), modelFlag, mode)
 
 	header := judgePromptHeader()
+	if fewshot {
+		header = judgeFewShotHeader()
+	}
 
 	var pending []int
 	for i, it := range items {
@@ -511,6 +526,42 @@ Examples of valid outputs:
 ---
 
 `
+}
+
+// judgeFewShotHeader augments the base rubric prompt with worked
+// contrastive examples on the strategy<->context boundary — the facet
+// pair self-consistency Run 7 (findings.md §1.7) found intrinsically
+// fuzzy (highest flip rate across all three models). The examples are
+// drawn verbatim from rubric.md §1.1/§1.2 so they introduce no new
+// labelling policy, only demonstrations. Other facet boundaries
+// (security, guardrails) are already crisp and need no anchoring.
+//
+// The examples are inserted before the base header's trailing "---"
+// separator so per-item content still follows the separator unchanged.
+func judgeFewShotHeader() string {
+	base := judgePromptHeader()
+	const sep = "---\n\n"
+	examples := `Worked examples (the strategy vs context boundary is the common
+mistake — an imperative is strategy even when it names a tool; a
+stateless fact about the project is context even when it names the
+same tool):
+
+- "Always run ` + "`go test ./...`" + ` after a change." -> strategy
+- "Use camelCase for variables." -> strategy
+- "Use only the standard library where possible." -> strategy
+- "The project uses Cobra for the CLI." -> context
+- "The project uses bcrypt for password hashing." -> context
+- "You are a senior security engineer reviewing a PR." -> context
+
+Contrast pair (same topic, opposite facet):
+- "Use parameterized queries for all DB calls." -> strategy
+- "The project uses PostgreSQL 16." -> context
+
+`
+	if strings.HasSuffix(base, sep) {
+		return base[:len(base)-len(sep)] + examples + sep
+	}
+	return base + examples
 }
 
 func judgeOne(provider llm.Provider, header string, it calibrateItem) ([]string, error) {
