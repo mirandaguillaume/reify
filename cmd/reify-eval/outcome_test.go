@@ -20,3 +20,10 @@ func TestIsTaskSolvedMarker(t *testing.T) {
 	assert.False(t, isTaskSolved("func Fix() {}", "// FIXED"))
 	assert.False(t, isTaskSolved("", "// FIXED"))
 }
+
+func TestParseChangedPaths(t *testing.T) {
+	out := "src/a.go\nconfig/x.txt\n\n  src/b.go  \n"
+	got := parseChangedPaths(out)
+	assert.Equal(t, []string{"src/a.go", "config/x.txt", "src/b.go"}, got)
+	assert.Empty(t, parseChangedPaths(""))
+}
