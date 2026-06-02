@@ -207,6 +207,72 @@ needed (split `directive` from `mandate`, `prohibition` from
 weights toward the class matching its preferred grammar, but all three
 contribute to every class.
 
+### 1.7 Run 7 — self-consistency (same model, repeated runs)
+
+The question: when the SAME model labels the SAME item N times, how
+stable is the result? This isolates run-to-run variance at a fixed
+model, complementing the cross-model divergence of runs 1-6. Run via
+`reify-calibrate selfconsistency` (closed mode) and `--open` (emergent
+tags), 200 items × 5 runs, no errors (6000 calls total).
+
+Two modes, because "consistency" means different things with and
+without the taxonomy:
+
+- **Closed** (5-facet judge): perfect-stable rate, modal agreement,
+  mean pairwise Jaccard, per-facet flip rate.
+- **Open** (free tags): only raw-tag mean pairwise Jaccard is defined
+  (no modal labelset exists over invented vocabulary). Raw = exact
+  strings, no normalisation, so `risk_flag` ≠ `risk_flagging` — a
+  surface-stability measure.
+
+**The 2×2 variance matrix** (mean pairwise Jaccard):
+
+| | Haiku | Sonnet | Opus |
+|---|---:|---:|---:|
+| **closed** (judge) | 0.895 | 0.974 | 0.963 |
+| **open** (tags) | 0.079 | 0.238 | 0.343 |
+
+(cross-model reference, from §1.4/§2.2: closed ≈ 0.44, open ≈ 0.014)
+
+Supporting numbers:
+
+| | Haiku | Sonnet | Opus |
+|---|---:|---:|---:|
+| perfect-stable (closed) | 69.5% | 91.0% | 90.0% |
+| zero-overlap rate (open) | 38.5% | 4.5% | 1.0% |
+| tags/run (open) | 1.64 | 2.09 | 2.25 |
+| ratio closed/open | 11.3× | 4.1× | 2.8× |
+
+Per-facet flip rate (closed) gives an identical stability ranking
+across all three models:
+`security < guardrails < observability < context < strategy`.
+
+Three findings:
+
+1. **The taxonomy is a noise absorber, most for weak models.** The
+   closed/open ratio runs 11.3× (Haiku) → 2.8× (Opus). Imposing the 5
+   facets multiplies Haiku's self-agreement 11-fold. A closed
+   vocabulary doesn't just organise — it collapses surface generation
+   jitter into a stable decision, and the cheapest model benefits most.
+
+2. **Closed is a threshold, open is a gradient.** Closed: Haiku drops
+   out, Sonnet ≈ Opus plateau (~90%, the ceiling of a 5-way choice).
+   Open: stability rises monotonically with capacity (0.079 → 0.238 →
+   0.343; zero-overlap 38.5% → 4.5% → 1.0%). With a near-unbounded
+   output space, a stronger model expresses a more stable lexical
+   "dialect" — it re-picks the same tags for the same item.
+
+3. **Vocabulary divergence is part noise, part model signature.**
+   Same-model open Jaccard (0.08–0.34) is 6–24× the cross-model figure
+   (0.014). So a model reuses its own vocabulary far more than any two
+   models share theirs — the divergence of §1.4 is a model signature,
+   not pure temperature noise, and the signature sharpens with capacity.
+
+The per-facet ranking (finding above) is itself cross-model invariant:
+`security`/`guardrails` are crisp categories, `strategy`/`context` are
+the intrinsically fuzzy boundary — a property of the taxonomy, not of
+any model. That boundary is the obvious target for few-shot anchoring.
+
 ## 2. Cross-cutting findings
 
 ### 2.1 Topical ⊥ Intent
@@ -265,14 +331,17 @@ distinction.
 
 - **Round 2 (cluster) on Sonnet + Haiku + Opus union** — ✅ done, see
   §1.6 / §2.4. Order emerges: 13 clusters, 12/13 absorb all 3 sources.
-- **Self-consistency** — same model, same prompt, multiple seeds.
-  Tells us whether per-item variance is dominated by model identity
-  or temperature noise.
-- **Few-shot in `reify classify`** — once round 2 reveals stable
-  clusters, use those examples (or the rubric's own examples) as
-  few-shot anchors in the production classifier prompt. Hypothesis:
-  cross-model agreement under the imposed 5-facet taxonomy climbs
-  from ~48% to 70%+.
+- **Self-consistency** — ✅ done, see §1.7. Run 7 ran both closed and
+  open modes over 3 models. Closed is a capacity threshold (Haiku 69.5%
+  vs Sonnet/Opus ~90% perfect-stable); open is a gradient (Jaccard
+  0.079 → 0.238 → 0.343). The taxonomy absorbs surface noise 2.8–11.3×,
+  most for the weakest model.
+- **Few-shot in `reify classify`** — use the rubric's examples (or
+  cluster exemplars from §1.6) as few-shot anchors in the production
+  classifier prompt. The §1.7 per-facet ranking says where it matters
+  most: the `strategy`↔`context` boundary is the intrinsically fuzzy
+  one, so anchor there first. Hypothesis: cross-model agreement under
+  the 5-facet taxonomy climbs from ~44% toward 70%+.
 - **Gold labelling** — the irreducible anchor. ~50-100 items labelled
   by hand under rubric v1.1 multi-label, scored against every
   classifier path with `reify-calibrate score`.
@@ -290,6 +359,10 @@ distinction.
 - `/tmp/cal-opus.jsonl` — `emergent_labels` from Opus 4.8
 - `/tmp/clusters.json` — Run 6 referee output (13 clusters + outliers,
   per-source provenance) from `explore cluster`
+- `/tmp/sc-<model>.json` — Run 7 closed-mode self-consistency reports
+  (per-item runs, modal labels, facet flip rates) from `selfconsistency`
+- `/tmp/sc-open-<model>.json` — Run 7 open-mode reports (per-item raw
+  tag runs, pairwise Jaccard) from `selfconsistency --open`
 
 All of `/tmp/cal*.jsonl` are ephemeral artefacts. The reproducible
 inputs are this `findings.md`, `rubric.md`, `REGENERATING.md` (the
