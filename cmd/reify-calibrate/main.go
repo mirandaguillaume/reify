@@ -1323,6 +1323,7 @@ func selfConsistencyCmd() *cobra.Command {
 	var providerFlag, modelFlag string
 	var runs, concurrency int
 	var open bool
+	var fewshot bool
 
 	cmd := &cobra.Command{
 		Use:   "selfconsistency",
@@ -1351,7 +1352,7 @@ emergent Jaccard (~1.4%, findings.md §1.4): if same-model run-to-run is
 also near-zero, vocabulary divergence is generation noise; if it is
 high, the divergence is a model signature.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSelfConsistency(input, output, providerFlag, modelFlag, runs, concurrency, open)
+			return runSelfConsistency(input, output, providerFlag, modelFlag, runs, concurrency, open, fewshot)
 		},
 	}
 
@@ -1362,6 +1363,7 @@ high, the divergence is a model signature.`,
 	cmd.Flags().IntVarP(&runs, "runs", "n", 5, "number of repeated runs per item")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 8, "parallel requests")
 	cmd.Flags().BoolVar(&open, "open", false, "open-coding mode: tag with free vocabulary, report raw-tag Jaccard only")
+	cmd.Flags().BoolVar(&fewshot, "fewshot", false, "closed mode only: use the few-shot judge prompt (strategy/context anchors)")
 	_ = cmd.MarkFlagRequired("input")
 	return cmd
 }
@@ -1391,9 +1393,12 @@ type itemConsistency struct {
 	PerfectStable bool       `json:"perfect_stable"`
 }
 
-func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, concurrency int, open bool) error {
+func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, concurrency int, open, fewshot bool) error {
 	if runs < 2 {
 		return fmt.Errorf("--runs must be >= 2 (self-consistency needs repeated runs)")
+	}
+	if open && fewshot {
+		return fmt.Errorf("--fewshot applies to closed mode only; it has no effect with --open")
 	}
 	if concurrency <= 0 {
 		concurrency = 1
@@ -1414,18 +1419,23 @@ func runSelfConsistency(input, output, providerFlag, modelFlag string, runs, con
 	mode := "closed (judge)"
 	if open {
 		mode = "open (emergent tags)"
+	} else if fewshot {
+		mode = "closed (judge, few-shot)"
 	}
 	fmt.Printf("Self-consistency [%s]: %s / %s, %d runs over %d items\n\n",
 		mode, color.CyanString(providerFlag), modelFlag, runs, len(items))
 
 	// labelFn produces one run's labels for an item. Closed mode uses the
-	// 5-facet judge; open mode uses the open-coding tagger.
+	// 5-facet judge (optionally few-shot); open mode uses the open-coding tagger.
 	var labelFn func(calibrateItem) ([]string, error)
 	if open {
 		header := emergentTagPromptHeader()
 		labelFn = func(it calibrateItem) ([]string, error) { return emergentTagOne(provider, header, it) }
 	} else {
 		header := judgePromptHeader()
+		if fewshot {
+			header = judgeFewShotHeader()
+		}
 		labelFn = func(it calibrateItem) ([]string, error) { return judgeOne(provider, header, it) }
 	}
 
