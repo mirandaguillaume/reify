@@ -263,6 +263,39 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 	return result
 }
 
+// EmitProjectConfig compiles a project's harness config (hooks/MCP/native
+// skills) for the build target and writes the resulting files under
+// outputDir, backing up any overwritten file. Targets that implement
+// spec.ConfigGenerator port-or-degrade; targets that don't are a no-op.
+// Returned warnings (e.g. a hook degraded to prose) are for the caller to
+// surface. A nil/empty config is a no-op.
+func EmitProjectConfig(target, outputDir string, cfg model.ProjectConfig) (warnings []string, err error) {
+	if cfg.IsEmpty() {
+		return nil, nil
+	}
+	gen, err := spec.Get(target)
+	if err != nil {
+		return nil, err
+	}
+	cg, ok := gen.(spec.ConfigGenerator)
+	if !ok {
+		// Target has no config support at all — everything is lost; tell
+		// the caller rather than silently dropping it.
+		return []string{fmt.Sprintf("target %q does not support hooks/MCP/native skills; project config not emitted", target)}, nil
+	}
+	files, warns := cg.GenerateConfig(cfg)
+	for _, f := range files {
+		full := filepath.Join(outputDir, filepath.FromSlash(f.Path))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			return warns, fmt.Errorf("create dir for %s: %w", f.Path, err)
+		}
+		if err := writeFileWithBackup(full, []byte(f.Content), 0644); err != nil {
+			return warns, fmt.Errorf("write %s: %w", f.Path, err)
+		}
+	}
+	return warns, nil
+}
+
 // writeFileWithBackup writes data to path, first preserving any existing
 // file as path+".bak" — but only when the existing content actually
 // differs, so repeated builds don't churn identical backups. This protects
