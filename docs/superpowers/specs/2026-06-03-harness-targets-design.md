@@ -36,11 +36,16 @@ warnings). That honesty is the differentiator.
 ## 1. Goal
 
 Reify's wedge is multi-harness compilation (1 source → N harnesses). The
-existing targets are claude, copilot, cursor, reify. This adds more, and
-deepens what "a target" means — beyond prose instructions to the runtime
-config a real setup carries.
+original targets were claude, copilot, cursor, reify. This note added more
+and deepened what "a target" means — beyond prose instructions to the
+runtime config a real setup carries.
 
-Verified output formats (from each tool's docs):
+> **Implemented set (see §4 for the full matrix):** claude, cursor,
+> copilot, **copilot-vscode / copilot-cli / copilot-jetbrains** (Copilot is
+> not one target — each surface reads MCP differently, §2c), agents, reify.
+> windsurf + aider are specced below but not yet built.
+
+Verified output formats for the prose targets added (from each tool's docs):
 
 | Target | Instructions file | Loaded how |
 |---|---|---|
@@ -66,23 +71,28 @@ Writing the file is not enough if the harness doesn't load it:
   needs a second artefact to be effective must emit it. ("Fidelity:
   file + loading mechanism" — the chosen support level.)
 
-### 2c. MCP config — portable by schema, differs by path
-Correction during brainstorm: MCP config **is** portable. All harnesses
-share the `mcpServers` JSON schema
-(`{"mcpServers":{"name":{"command","args","env"}}}`); only the file path
-differs. So MCP is a **mechanical path-mapping**, not a translation
-problem. Project-level paths (reify compiles a project, not a user home):
+### 2c. MCP config — path-map for some, schema-map for others
+The brainstorm assumed MCP was purely portable — one shared `mcpServers`
+schema, only the path differing. **Implementation proved that wrong.**
+Verifying each surface against current vendor docs (June 2026) showed the
+*schema* differs too, so MCP is a **path-map for some targets and a
+schema-map for others**. The implemented per-surface reality:
 
-| Target | MCP file (project) |
-|---|---|
-| claude | `.mcp.json` (root) |
-| cursor | `.cursor/mcp.json` |
-| vscode/copilot | `.vscode/mcp.json` |
-| windsurf | (user-level `~/.codeium/...`; no standard project file — warn) |
-| agents/aider | no native MCP file — warn / skip |
+| Target / surface | MCP file (project) | Root key | Per-server shape | Fidelity |
+|---|---|---|---|---|
+| claude | `.mcp.json` (root) | `mcpServers` | `command/args/env` | full, verbatim |
+| cursor | `.cursor/mcp.json` | `mcpServers` | `command/args/env` | full, path-map |
+| copilot-vscode | `.vscode/mcp.json` | **`servers`** | **`type:"stdio"`** + command/args/env | full, **schema-map** |
+| copilot-cli | `~/.copilot/mcp-config.json` | `mcpServers` | **`type:"local"`** + `tools:["*"]` | artefact + warn (**user-level**, out of project) |
+| copilot-jetbrains | UI-managed (Copilot icon → settings) | — | — | snippet + warn (**no project file**) |
+| agents | none standard | `mcpServers` (reference) | command/args/env | reference + warn |
+| windsurf / aider | none standard (not yet implemented) | — | — | warn / skip |
 
-The MCP *server* (the binary, the infra) is out of scope — that's machine
-install, not compilation. Only the **declaration** is compiled.
+Key correction: **a naive converter that copies the `mcpServers` blob
+verbatim produces invalid config for VS Code** (which needs `servers` +
+`type:stdio`). reify schema-maps per surface and warns where a surface has
+no writable project file. The MCP *server* (binary/infra) stays out of
+scope — only the **declaration** is compiled.
 
 ### 2d. Hooks — the hard axis: degrade + warn
 A hook (Claude Code `settings.json` PreToolUse/PostToolUse + shell
@@ -101,28 +111,45 @@ fidelity thesis.)
 
 ## 3. Model changes (`pkg/model`)
 
-New concepts the model must represent so import → build can carry them:
+New concepts the model represents so import → build can carry them, grouped
+under one `model.ProjectConfig` (distinct from per-skill `SkillBehavior`):
 
-- **Hook**: `{Event: pre|post, Tool: glob, Command: string}` — parsed
-  from `.claude/settings.json`.
-- **MCPServer**: `{Name, Command, Args[], Env{}}` — parsed from
-  `.mcp.json`. A near-verbatim struct of the shared schema.
-- **Skills**: already exist (`SkillBehavior`) — new targets get them
-  free.
+- **Hook**: `{Event, Matcher, Command string}` — the flattened form of one
+  `.claude/settings.json` hook entry (event → matcher → command).
+- **MCPServer**: `{Command string, Args []string, Env map}` — keyed by name
+  in `ProjectConfig.MCPServers map[string]MCPServer`. JSON tags match the
+  shared `.mcp.json` schema so it unmarshals directly. (HTTP/remote servers
+  — `url`/`headers` — are not modelled yet; only stdio command servers.)
+- **NativeSkill**: `{Name, Description, Body, DisableModelInvocation}` —
+  parsed from `.claude/skills/<name>/SKILL.md`.
+- **Skills (abstract)**: `SkillBehavior` already exists — the 5-facet source
+  of truth, separate from the concrete harness config above.
 
-These are additive to the model; treat as a `pkg/` contract change
-(breaking, update internal/ call sites in the same change), per the
+These are additive to the model; treated as a `pkg/` contract change per the
 stability note.
 
-## 4. Compilation matrix (what build emits per target)
+## 4. Compilation matrix (implemented)
 
-| | instructions | skills | MCP | hooks |
+Fidelity per pillar: ✅ native/full · ⚠️ degraded-with-warning · ✗ not yet built.
+The config pillars (MCP / hooks / native skills) are emitted by each target's
+`spec.ConfigGenerator`; `build --input <project>` drives the port.
+
+| Target | instructions | MCP | hooks | native skills |
 |---|---|---|---|---|
-| claude | CLAUDE.md | .claude/skills/ | .mcp.json (verbatim) | settings.json (verbatim) |
-| agents | AGENTS.md | inline/section | — (warn) | prose + warn |
-| windsurf | .windsurfrules | inline/section | — (warn) | prose + warn |
-| aider | CONVENTIONS.md + .aider.conf.yml | inline | — (warn) | prose + warn |
-| cursor (exists) | .cursorrules | .cursor/rules/ | .cursor/mcp.json | prose + warn |
+| claude | `CLAUDE.md` | ✅ `.mcp.json` | ✅ `settings.json` | ✅ `SKILL.md` |
+| cursor | `.cursorrules` | ✅ `.cursor/mcp.json` | ⚠️ prose `.mdc` | ⚠️ rule `.mdc` |
+| copilot-vscode | `.github/copilot-instructions.md` | ✅ `.vscode/mcp.json` (schema-map) | ⚠️ prose | ⚠️ prose |
+| copilot-cli | (shared copilot instr.) | ⚠️ portable artefact (user-level) | ⚠️ prose | ⚠️ prose |
+| copilot-jetbrains | (shared copilot instr.) | ⚠️ snippet (UI-managed) | ⚠️ prose | ⚠️ prose |
+| copilot (generic) | `.github/copilot-instructions.md` | — (use a surface) | — | — |
+| agents | `AGENTS.md` | ⚠️ reference snippet | ⚠️ prose | ⚠️ prose |
+| windsurf | `.windsurfrules` | ✗ | ✗ | ✗ |
+| aider | `CONVENTIONS.md` + `.aider.conf.yml` | ✗ | ✗ | ✗ |
+
+The three Copilot surfaces are distinct targets (not one) because they read
+MCP from different files with different schemas (§2c); they embed the base
+copilot generator to share instruction/skill output. Shared port-config
+renderers live in `internal/generator/portconfig.go`.
 
 ## 5. Import (harness → reify)
 
@@ -153,14 +180,28 @@ gains Hook/MCPServer.
 - The reify-eval research bench (separate branch/effort).
 - Driving harnesses headlessly (that was eval-run-004, a different thing).
 
-## 8. Sequencing
+## 8. Sequencing — status
 
-1. `agents` target (instructions + skills only) — prove the increment,
-   merge. No model change needed (reuses SkillBehavior).
-2. `pkg/model`: add Hook + MCPServer.
-3. `import`: parse settings.json hooks + .mcp.json into the model.
-4. MCP path-mapping in build (mechanical, per target).
-5. Hook degradation + `check` warnings.
-6. windsurf + aider targets (aider needs the `.aider.conf.yml` artefact).
+1. ✅ `agents` target (instructions + skills) — done; later gained
+   observability/security rendering and a degrading `ConfigGenerator`.
+2. ✅ `pkg/model`: `ProjectConfig` with `Hook{Event,Matcher,Command}`,
+   `MCPServer{Command,Args,Env}` (map-keyed by name), `NativeSkill`.
+3. ✅ `import`: `ImportProjectConfig` parses `settings.json` hooks,
+   `.mcp.json`, and `.claude/skills/*/SKILL.md`.
+4. ✅ MCP per target — and it was a **schema-map, not just a path-map**
+   (§2c): claude/cursor `mcpServers`, copilot-vscode `servers`+stdio,
+   copilot-cli `type:local`+tools.
+5. ✅ Hook/skill degradation with build-time warnings, via
+   `spec.ConfigGenerator` + `build --input`. ⚠️ `check`-time warnings (warn
+   *before* a build) still TODO.
+6. ✗ windsurf + aider targets (aider needs the `.aider.conf.yml` artefact)
+   — not yet built; will reuse the shared `portconfig.go` renderers.
 
-Each step is independently shippable and gated on the previous.
+Delivered targets: claude, cursor, copilot, copilot-vscode, copilot-cli,
+copilot-jetbrains, agents, reify. The port runs end-to-end via
+`reify build --target <T> --input <project>`.
+
+> **Deviation from §7 (out of scope).** copilot-cli's real MCP file is
+> user-level (`~/.copilot/`). We hold the "no user-level writes" rule —
+> reify emits a *project-local portable artifact* and warns the user to copy
+> it. The rule constrains where we write, not what we acknowledge exists.
