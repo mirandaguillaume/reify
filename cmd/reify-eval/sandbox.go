@@ -79,12 +79,23 @@ func runAttempt(f *Fixture, rule, model, effort string, litm litmParams) (*Attem
 	// which is the other reason we must not run as the image's root.
 	userArg := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 
+	// Name the container after the unique work dir so we can force-remove
+	// it even if it is orphaned. On timeout, exec.CommandContext kills the
+	// `docker` CLIENT but the container keeps running; --rm only fires on a
+	// normal exit. The deferred docker rm -f below is the safety net that
+	// prevents the orphaned-container leak.
+	containerName := "reify-eval-" + filepath.Base(work)
+	defer func() {
+		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	}()
+
 	// --dangerously-skip-permissions: safe inside the throwaway container.
 	// --bare: the fixture rule is the ONLY instruction context.
 	// stream-json (+ --verbose, required) emits one event per line so we can
 	// extract the agent's tool calls — needed for trace-based intentions
 	// (e.g. test-before-commit) that the diff cannot see.
 	docker := exec.CommandContext(ctx, "docker", "run", "--rm",
+		"--name", containerName,
 		"--user", userArg,
 		"-e", "HOME=/tmp",
 		"-v", work+":/work",
