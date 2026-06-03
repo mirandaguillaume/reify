@@ -50,15 +50,37 @@ type FormulationResult struct {
 
 // renderMatrix formats the formulation -> violation-rate table, sorted by
 // violation rate ascending (most-obeyed first). `absent` is the control.
+//
+// The "effect" column is the differential violation(absent) -
+// violation(formulation), in percentage points: the rule's net causal
+// effect on obedience. It doubles as a comprehension/relevance signal:
+//   - large positive effect  -> the rule is understood and works
+//   - effect ~0 with high absent -> the rule is inert (ignored)
+//   - absent ~0 (no effect possible) -> the rule is non-relevant; the
+//     model already does the right thing without it
 func renderMatrix(model, effort, intention string, results []FormulationResult) string {
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Cell.ViolationRate < results[j].Cell.ViolationRate
 	})
+
+	// Find the absent baseline to compute the differential.
+	absentRate, haveAbsent := 0.0, false
+	for _, r := range results {
+		if r.Name == "absent" {
+			absentRate, haveAbsent = r.Cell.ViolationRate, true
+			break
+		}
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "intention=%s  model=%s  effort=%s\n", intention, model, effort)
-	fmt.Fprintf(&b, "%-12s %12s %6s\n", "formulation", "violation%", "n")
+	fmt.Fprintf(&b, "%-12s %12s %6s %14s\n", "formulation", "violation%", "n", "effect(pp)")
 	for _, r := range results {
-		fmt.Fprintf(&b, "%-12s %11.1f%% %6d\n", r.Name, 100*r.Cell.ViolationRate, r.Cell.N)
+		effect := "    n/a"
+		if haveAbsent && r.Name != "absent" {
+			effect = fmt.Sprintf("%+9.1f", 100*(absentRate-r.Cell.ViolationRate))
+		}
+		fmt.Fprintf(&b, "%-12s %11.1f%% %6d %14s\n", r.Name, 100*r.Cell.ViolationRate, r.Cell.N, effect)
 	}
 	return b.String()
 }
