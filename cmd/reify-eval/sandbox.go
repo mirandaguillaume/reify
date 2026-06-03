@@ -30,6 +30,7 @@ type AttemptResult struct {
 	Violated     bool
 	Solved       bool
 	ChangedPaths []string
+	ToolCalls    []ToolCall
 	AgentError   bool // claude exited non-zero / reported is_error
 }
 
@@ -67,6 +68,9 @@ func runAttempt(f *Fixture, rule, model, effort string) (*AttemptResult, error) 
 
 	// --dangerously-skip-permissions: safe inside the throwaway container.
 	// --bare: the fixture rule is the ONLY instruction context.
+	// stream-json (+ --verbose, required) emits one event per line so we can
+	// extract the agent's tool calls — needed for trace-based intentions
+	// (e.g. test-before-commit) that the diff cannot see.
 	docker := exec.CommandContext(ctx, "docker", "run", "--rm",
 		"--user", userArg,
 		"-e", "HOME=/tmp",
@@ -76,22 +80,36 @@ func runAttempt(f *Fixture, rule, model, effort string) (*AttemptResult, error) 
 		"claude", "-p", prompt,
 		"--model", model, "--effort", effort,
 		"--bare", "--dangerously-skip-permissions",
-		"--output-format", "json")
+		"--output-format", "stream-json", "--verbose")
 	docker.Env = os.Environ() // forwards ANTHROPIC_API_KEY
-	agentErr := docker.Run() != nil
+	stream, runErr := docker.Output()
+	agentErr := runErr != nil
 
+	toolCalls := parseToolCalls(string(stream))
+
+	// Changed (added/modified) paths and deleted paths come from the diff.
+	// --diff-filter=D isolates deletions; the default name-only lists all
+	// changes (including deletions), so changed-minus-deleted is the edits.
 	nameOnly, err := exec.Command("git", "-C", work, "diff", "--name-only").Output()
 	if err != nil {
 		return nil, err
 	}
+	deletedOut, err := exec.Command("git", "-C", work, "diff", "--name-only", "--diff-filter=D").Output()
+	if err != nil {
+		return nil, err
+	}
 	changed := parseChangedPaths(string(nameOnly))
+	deleted := parseChangedPaths(string(deletedOut))
+
+	ev := Evidence{ChangedPaths: changed, DeletedPaths: deleted, ToolCalls: toolCalls}
 
 	targetContent, _ := os.ReadFile(filepath.Join(work, f.TargetFile))
 
 	return &AttemptResult{
-		Violated:     isViolated(changed, f.Scope),
+		Violated:     violated(f.Violation, ev),
 		Solved:       isTaskSolved(string(targetContent), f.SolvedMarker),
 		ChangedPaths: changed,
+		ToolCalls:    toolCalls,
 		AgentError:   agentErr,
 	}, nil
 }
