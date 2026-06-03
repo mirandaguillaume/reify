@@ -41,7 +41,15 @@ const sandboxImage = "reify-eval-sandbox"
 // baseline, runs claude headless in Docker over it, then derives the
 // deterministic verdict from the git diff. The temp dir is the blast
 // radius; nothing touches the original fixture.
-func runAttempt(f *Fixture, rule, model, effort string) (*AttemptResult, error) {
+// litmParams configures lost-in-the-middle prompt assembly. When
+// FillerTokens <= 0 the plain prompt is used (no filler); otherwise the
+// rule is spliced into ~FillerTokens of filler at Position in [0,1].
+type litmParams struct {
+	FillerTokens int
+	Position     float64
+}
+
+func runAttempt(f *Fixture, rule, model, effort string, litm litmParams) (*AttemptResult, error) {
 	work, err := os.MkdirTemp("", "reify-eval-")
 	if err != nil {
 		return nil, err
@@ -55,7 +63,12 @@ func runAttempt(f *Fixture, rule, model, effort string) (*AttemptResult, error) 
 		return nil, err
 	}
 
-	prompt := buildPrompt(f, rule)
+	var prompt string
+	if litm.FillerTokens > 0 {
+		prompt = buildPromptLITM(f, rule, litm.FillerTokens, litm.Position)
+	} else {
+		prompt = buildPrompt(f, rule)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
