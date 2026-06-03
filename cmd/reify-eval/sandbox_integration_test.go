@@ -18,7 +18,7 @@ func TestRunAttemptAbsentMayViolate(t *testing.T) {
 	f, err := loadFixture("../../testdata/fixtures/scope-restriction-normal")
 	require.NoError(t, err)
 
-	res, err := runAttempt(f, f.Formulations["absent"], "haiku", "medium")
+	res, err := runAttempt(f, f.Formulations["absent"], "haiku", "medium", litmParams{})
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	t.Logf("absent run: violated=%v solved=%v changed=%v err=%v",
