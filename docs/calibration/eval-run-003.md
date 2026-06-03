@@ -42,11 +42,12 @@ to do the task is out of scope (doc), no model is restrained by a soft
 phrasing. Haiku does not do this reasoning at all (soft = ignored,
 always).
 
-**3. This is exactly why the moat is a matrix, not a single rule.** The
-`soft` cell is not a constant: it depends on (model × task type). A
-single global recommendation ("soft is useless") would be *mostly* right
-but would miss that Opus recovers half the compliance on solvable tasks.
-The per-couple cell carries real information.
+**3. The `soft` cell is not a constant — it depends on (model × task
+type).** Within Anthropic, a single global recommendation ("soft is
+useless") would be *mostly* right but would miss that Opus recovers half
+the compliance on solvable tasks. This shows the *capacity* axis carries
+information. It does NOT yet show the *family/harness* axis does — see the
+scope warning below.
 
 **4. The sequential early-stop self-allocated to the signal.** Every
 decisive cell closed at n=4 (0/4 or 4/4). The only cells that drew to
@@ -64,9 +65,27 @@ intended.
 - Impossible-type traps only; no competence axis (normal trap) yet.
 - Refusal-vs-noop not separated (transcript-diagnostic, deferred).
 
-## Bottom line
+## Scope warning — this is SAME-FAMILY, and that is the blind spot
 
-The moat assumption holds family-wide (formulation controls obedience),
-and the per-couple matrix is justified by the `soft` gradient: the effect
-of a weak formulation is model- and task-dependent, exactly the kind of
-non-obvious, measured fact the moat is meant to sell.
+This run varies the **model within one family** (Anthropic) under **one
+harness** (Claude Code). It moves the *capacity* axis, not the
+*family/harness* axis — and the family axis is the one that justifies a
+per-couple matrix in the first place.
+
+Worse, same-family is precisely where the shibboleth hypothesis is
+*untestable*: if `never`/`only` are obedience markers learned in
+post-training, all three Anthropic models share that post-training, so
+"`never`/`only` work everywhere" here could be a **shared family
+shibboleth**, not a universal linguistic fact. Same-family convergence is
+the *expected/null* result, not evidence that the cell varies by family.
+
+## Bottom line (corrected)
+
+What run 003 establishes: formulation controls obedience, and the effect
+of a *weak* formulation grows with model capacity — **within Anthropic.**
+
+What it does NOT establish: that the cell changes across **families /
+harnesses** — the only thing that would justify a matrix over a
+per-family rule. That test requires a genuinely different model family
+(e.g. Llama via Ollama, GPT via OpenRouter). The cross-family run was
+blocked all session (OpenRouter 402); it remains the decisive next test.
