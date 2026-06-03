@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -166,7 +167,7 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 				result.Error = fmt.Sprintf("Failed to create directory for skill %q: %v", skill.Skill, err)
 				return result
 			}
-			if err := os.WriteFile(fullPath, []byte(md), 0644); err != nil {
+			if err := writeFileWithBackup(fullPath, []byte(md), 0644); err != nil {
 				result.Error = fmt.Sprintf("Failed to write skill %q: %v", skill.Skill, err)
 				return result
 			}
@@ -229,7 +230,7 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 				result.Error = fmt.Sprintf("Failed to create directory for agent %q: %v", agent.Agent, err)
 				return result
 			}
-			if err := os.WriteFile(fullPath, []byte(md), 0644); err != nil {
+			if err := writeFileWithBackup(fullPath, []byte(md), 0644); err != nil {
 				result.Error = fmt.Sprintf("Failed to write agent %q: %v", agent.Agent, err)
 				return result
 			}
@@ -251,7 +252,7 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 				result.Error = fmt.Sprintf("Failed to create directory for instructions: %v", err)
 				return result
 			}
-			if err := os.WriteFile(fullPath, []byte(instructions), 0644); err != nil {
+			if err := writeFileWithBackup(fullPath, []byte(instructions), 0644); err != nil {
 				result.Error = fmt.Sprintf("Failed to write instructions: %v", err)
 				return result
 			}
@@ -260,6 +261,22 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 
 	result.Success = true
 	return result
+}
+
+// writeFileWithBackup writes data to path, first preserving any existing
+// file as path+".bak" — but only when the existing content actually
+// differs, so repeated builds don't churn identical backups. This protects
+// hand-edited files (e.g. a root AGENTS.md or CLAUDE.md) from being
+// silently overwritten by a build.
+func writeFileWithBackup(path string, data []byte, perm os.FileMode) error {
+	if existing, err := os.ReadFile(path); err == nil {
+		if !bytes.Equal(existing, data) {
+			if err := os.WriteFile(path+".bak", existing, perm); err != nil {
+				return fmt.Errorf("write backup %s.bak: %w", path, err)
+			}
+		}
+	}
+	return os.WriteFile(path, data, perm)
 }
 
 func countWords(text string) int {
