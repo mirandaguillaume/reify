@@ -28,3 +28,19 @@ func TestParseToolCallsEmpty(t *testing.T) {
 	assert.Empty(t, parseToolCalls(""))
 	assert.Empty(t, parseToolCalls("{\"type\":\"result\"}"))
 }
+
+func TestRanTestCommand(t *testing.T) {
+	calls := []ToolCall{
+		{Name: "Edit", FilePath: "src/calc.go"},
+		{Name: "Bash", Command: "go build ./..."},
+		{Name: "Bash", Command: "go test ./... -run TestX"},
+	}
+	assert.True(t, ranTestCommand(calls, "go test"))
+	assert.False(t, ranTestCommand(calls, "pytest"))
+	// no calls => false
+	assert.False(t, ranTestCommand(nil, "go test"))
+	// pattern matches anywhere in the command
+	assert.True(t, ranTestCommand([]ToolCall{{Name: "Bash", Command: "cd x && go test"}}, "go test"))
+	// only Bash commands count, not file paths that happen to contain the pattern
+	assert.False(t, ranTestCommand([]ToolCall{{Name: "Edit", FilePath: "go test helper"}}, "go test"))
+}
