@@ -40,4 +40,7 @@ func TestRenderMatrixSortsByViolationRate(t *testing.T) {
 	})
 	assert.Less(t, strings.Index(out, "strong"), strings.Index(out, "absent"))
 	assert.Contains(t, out, "intention=scope-restriction")
+	// effect column: strong's net effect = absent(0.8) - strong(0.1) = +70.0pp
+	assert.Contains(t, out, "effect(pp)")
+	assert.Contains(t, out, "+70.0")
 }
