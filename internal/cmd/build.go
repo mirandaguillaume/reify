@@ -80,15 +80,24 @@ func init() {
 		Long: `Compile Reify skill YAML specs into framework-native files.
 
 Supported targets:
-  claude    — Claude Code (.claude/skills/, .claude/agents/)
-  copilot   — GitHub Copilot (.github/skills/, .github/agents/)
-  reify   — Standalone Go runtime binary
+  claude             — Claude Code (.claude/, .mcp.json)
+  copilot            — GitHub Copilot, generic (.github/)
+  copilot-vscode     — Copilot in VS Code (.vscode/mcp.json, servers schema)
+  copilot-cli        — Copilot CLI (~/.copilot/mcp-config.json schema)
+  copilot-jetbrains  — Copilot in JetBrains/Eclipse/Xcode (UI-managed MCP)
+  cursor             — Cursor (.cursor/, .cursorrules)
+  agents             — AGENTS.md (Codex, Zed, recent Aider)
+  reify              — Standalone Go runtime binary
+
+With --input <project>, also ports runtime config (hooks, MCP servers,
+native skills) from the source project, degrading per-pillar where the
+target lacks a native channel and warning about each loss.
 
 Examples:
   reify build --target claude
-  reify build --target copilot --compact
-  reify build --target reify --output ./out
-  reify build --target claude --watch`,
+  reify build --target cursor --input .            # port .claude config to Cursor
+  reify build --target copilot-vscode --input .
+  reify build --target reify --output ./out`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			available := spec.Available()
 			found := false
