@@ -16,6 +16,7 @@ import (
 	"github.com/mirandaguillaume/reify/pkg/spec"
 
 	// Register generators so spec.Get works.
+	_ "github.com/mirandaguillaume/reify/internal/generator/agents"
 	_ "github.com/mirandaguillaume/reify/internal/generator/claude"
 	_ "github.com/mirandaguillaume/reify/internal/generator/copilot"
 	_ "github.com/mirandaguillaume/reify/internal/generator/cursor"
