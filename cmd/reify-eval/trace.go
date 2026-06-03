@@ -52,3 +52,17 @@ func parseToolCalls(stream string) []ToolCall {
 	}
 	return out
 }
+
+// ranTestCommand reports whether any Bash tool call's command contains the
+// given pattern (e.g. "go test"). Only Bash calls are considered — a file
+// path that happens to contain the pattern does not count. This is the
+// deterministic, judge-free check for "process" intentions like
+// test-before-commit.
+func ranTestCommand(calls []ToolCall, pattern string) bool {
+	for _, c := range calls {
+		if c.Name == "Bash" && strings.Contains(c.Command, pattern) {
+			return true
+		}
+	}
+	return false
+}
