@@ -82,3 +82,48 @@ func TestGenerateAgentsMd_AgentDescriptionFallback(t *testing.T) {
 	out := agents.GenerateAgentsMd(nil, []model.AgentComposition{a})
 	assert.Contains(t, out, "sequential agent with 2 skills")
 }
+
+// fullSkill carries every facet so we can assert the complete proven-efficacy
+// ordering, not just guardrails-vs-steps.
+func fullSkill() model.SkillBehavior {
+	s := testSkill()
+	s.Observability = model.ObservabilityFacet{
+		TraceLevel: model.TraceLevelStandard,
+		Metrics:    []string{"settlement_outcome"},
+	}
+	s.Security = model.SecurityFacet{
+		Filesystem: model.AccessReadOnly,
+		Network:    model.NetworkAllowlist,
+		Secrets:    []string{"STRIPE_SECRET_KEY"},
+	}
+	return s
+}
+
+func TestGenerateAgentsMd_RendersObservability(t *testing.T) {
+	out := agents.GenerateAgentsMd([]model.SkillBehavior{fullSkill()}, nil)
+	assert.Contains(t, out, "Observability")
+	assert.Contains(t, out, "settlement_outcome")
+}
+
+func TestGenerateAgentsMd_RendersSecurity(t *testing.T) {
+	// The agents target has no config channel, so security MUST degrade to
+	// prose here — dropping it would silently lose a guarantee.
+	out := agents.GenerateAgentsMd([]model.SkillBehavior{fullSkill()}, nil)
+	assert.Contains(t, out, "Security")
+	assert.Contains(t, out, "STRIPE_SECRET_KEY")
+	assert.Contains(t, out, "read-only")
+}
+
+func TestGenerateAgentsMd_SecurityRendersLast(t *testing.T) {
+	// Proven-efficacy ordering: guardrails first (primacy), security last
+	// (recency for least-privilege). This is the contract the copy-vs-compile
+	// demo depends on.
+	out := agents.GenerateAgentsMd([]model.SkillBehavior{fullSkill()}, nil)
+	gIdx := strings.Index(out, "Never modify source files") // guardrail
+	stepIdx := strings.Index(out, "Read the code")          // strategy
+	obsIdx := strings.Index(out, "Observability")
+	secIdx := strings.Index(out, "Security")
+	assert.Greater(t, stepIdx, gIdx, "guardrails before strategy")
+	assert.Greater(t, obsIdx, stepIdx, "observability after strategy")
+	assert.Greater(t, secIdx, obsIdx, "security after observability — i.e. last")
+}

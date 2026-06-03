@@ -1,0 +1,36 @@
+# This spec is the facet classification reify produces from the flat
+# input/CLAUDE.md. It is committed here so the demo rebuilds deterministically
+# with `reify build` alone (no API key). To regenerate it live from the flat
+# file via the LLM classifier:
+#   reify import ../../input/CLAUDE.md --provider anthropic -o . --yes
+skill: payments-service
+version: "1.0.0"
+context:
+  consumes: [transaction, ledger_state]
+  produces: [settlement_outcome]
+  memory: short-term
+strategy:
+  tools: [read_file, bash]
+  approach: domain-first
+  effort: medium
+  steps:
+    - read the relevant domain/ package before changing anything
+    - run make test to establish a green baseline
+    - wire new endpoints through app/router.go and adapters/http/
+    - check the Redis idempotency key before every capture
+guardrails:
+  - "Never write to the ledger_entries table directly; always go through the domain/ledger aggregate"
+  - "Never skip the idempotency check before a capture, or we double-charge customers"
+  - "Never commit a change that makes make test fail"
+  - "Never log card numbers, CVVs, or the Stripe secret — PCI scope violation"
+  - "Never disable the nightly reconciliation alarm to make a deploy go green"
+observability:
+  trace_level: standard
+  metrics: [settlement_outcome]
+security:
+  filesystem: read-write
+  network: allowlist
+  secrets: [STRIPE_SECRET_KEY, DATABASE_URL]
+negotiation:
+  file_conflicts: yield
+  priority: 1
