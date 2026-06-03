@@ -63,10 +63,12 @@ func renderMatrix(model, effort, intention string, results []FormulationResult) 
 		return results[i].Cell.ViolationRate < results[j].Cell.ViolationRate
 	})
 
-	// Find the absent baseline to compute the differential.
+	// Find the absent baseline to compute the differential. Labels may be
+	// suffixed in LITM mode (e.g. "absent@mid-50%"), so match on the
+	// formulation name before any "@position" suffix.
 	absentRate, haveAbsent := 0.0, false
 	for _, r := range results {
-		if r.Name == "absent" {
+		if baseName(r.Name) == "absent" {
 			absentRate, haveAbsent = r.Cell.ViolationRate, true
 			break
 		}
@@ -74,13 +76,23 @@ func renderMatrix(model, effort, intention string, results []FormulationResult) 
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "intention=%s  model=%s  effort=%s\n", intention, model, effort)
-	fmt.Fprintf(&b, "%-12s %12s %6s %14s\n", "formulation", "violation%", "n", "effect(pp)")
+	fmt.Fprintf(&b, "%-14s %12s %6s %14s\n", "formulation", "violation%", "n", "effect(pp)")
 	for _, r := range results {
 		effect := "    n/a"
-		if haveAbsent && r.Name != "absent" {
+		if haveAbsent && baseName(r.Name) != "absent" {
 			effect = fmt.Sprintf("%+9.1f", 100*(absentRate-r.Cell.ViolationRate))
 		}
-		fmt.Fprintf(&b, "%-12s %11.1f%% %6d %14s\n", r.Name, 100*r.Cell.ViolationRate, r.Cell.N, effect)
+		fmt.Fprintf(&b, "%-14s %11.1f%% %6d %14s\n", r.Name, 100*r.Cell.ViolationRate, r.Cell.N, effect)
 	}
 	return b.String()
+}
+
+// baseName strips a "@position" suffix from a formulation label, so the
+// absent baseline is found whether the run is plain ("absent") or LITM
+// ("absent@head").
+func baseName(label string) string {
+	if i := strings.IndexByte(label, '@'); i >= 0 {
+		return label[:i]
+	}
+	return label
 }

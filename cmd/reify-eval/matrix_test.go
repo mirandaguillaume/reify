@@ -44,3 +44,21 @@ func TestRenderMatrixSortsByViolationRate(t *testing.T) {
 	assert.Contains(t, out, "effect(pp)")
 	assert.Contains(t, out, "+70.0")
 }
+
+func TestBaseName(t *testing.T) {
+	assert.Equal(t, "absent", baseName("absent"))
+	assert.Equal(t, "absent", baseName("absent@head"))
+	assert.Equal(t, "neutral", baseName("neutral@mid-50%"))
+	assert.Equal(t, "strong", baseName("strong@tail"))
+}
+
+func TestRenderMatrixEffectWithLITMLabels(t *testing.T) {
+	// LITM-suffixed labels must still find the absent baseline.
+	out := renderMatrix("haiku", "medium", "no-new-deps", []FormulationResult{
+		{Name: "absent@mid-50%", Cell: Cell{N: 6, ViolationRate: 1.0}},
+		{Name: "neutral@mid-50%", Cell: Cell{N: 6, ViolationRate: 0.5}},
+	})
+	// effect for neutral = absent(1.0) - neutral(0.5) = +50.0pp, not n/a
+	assert.Contains(t, out, "+50.0")
+	assert.NotContains(t, out, "neutral@mid-50%        50.0%      6            n/a")
+}
