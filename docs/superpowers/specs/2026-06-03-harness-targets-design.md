@@ -11,6 +11,28 @@
 > public-boundary note in CLAUDE.md ("new targets are compile-time
 > plugins").
 
+## 0. Repositioning — what reify actually is
+
+Building this chapter clarified the product. "Multi-harness compiler"
+undersells it (sounds like a markdown templater). What reify is becoming:
+
+> **A translator of AI tooling from one ecosystem to another.** Not just
+> prose instructions — the whole working environment: automations
+> (hooks), connected tools (MCP), packaged competencies (native skills).
+> A transpiler of *agent universes*.
+
+Crucially, fidelity is **per-pillar, and reify is honest about it**:
+
+| Pillar | Translation fidelity |
+|---|---|
+| MCP | **Full** — shared `mcpServers` schema; copy to each target's path, no loss. |
+| Native skills | **Partial** — same SKILL.md across Claude/Copilot; Cursor/Aider lack the concept → passthrough or degrade. |
+| Hooks | **Lossy** — no standard; a hook (an *enforced guarantee*) becomes a prose *suggestion* the LLM may ignore. We translate the intent, not the guarantee. |
+
+The product is not "works everywhere" — it's "here is what translates
+faithfully, and here is exactly what degrades and how" (the `check`
+warnings). That honesty is the differentiator.
+
 ## 1. Goal
 
 Reify's wedge is multi-harness compilation (1 source → N harnesses). The
