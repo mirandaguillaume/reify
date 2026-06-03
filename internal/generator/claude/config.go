@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mirandaguillaume/reify/internal/generator"
 	"github.com/mirandaguillaume/reify/pkg/model"
 	"github.com/mirandaguillaume/reify/pkg/spec"
 )
@@ -26,7 +27,7 @@ func (g *claudeGenerator) GenerateConfig(cfg model.ProjectConfig) ([]spec.Config
 		files = append(files, spec.ConfigFile{Path: "settings.json", Content: renderHooks(cfg.Hooks)})
 	}
 	if len(cfg.MCPServers) > 0 {
-		files = append(files, spec.ConfigFile{Path: "../.mcp.json", Content: renderMCP(cfg.MCPServers)})
+		files = append(files, spec.ConfigFile{Path: "../.mcp.json", Content: generator.RenderMCPServers(cfg.MCPServers)})
 	}
 	for _, s := range cfg.NativeSkills {
 		files = append(files, spec.ConfigFile{
@@ -82,13 +83,6 @@ func renderHooks(hooks []model.Hook) string {
 	}
 
 	doc := map[string]any{"hooks": out}
-	b, _ := json.MarshalIndent(doc, "", "  ")
-	return string(b) + "\n"
-}
-
-// renderMCP writes the standard mcpServers schema.
-func renderMCP(servers map[string]model.MCPServer) string {
-	doc := map[string]any{"mcpServers": servers}
 	b, _ := json.MarshalIndent(doc, "", "  ")
 	return string(b) + "\n"
 }

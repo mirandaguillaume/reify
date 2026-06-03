@@ -3,9 +3,8 @@ package copilot
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
-	"strings"
 
+	"github.com/mirandaguillaume/reify/internal/generator"
 	"github.com/mirandaguillaume/reify/pkg/model"
 )
 
@@ -55,44 +54,14 @@ func renderCLIMCP(servers map[string]model.MCPServer) string {
 	return string(b) + "\n"
 }
 
-// renderHooksProse turns enforced hooks into a prose markdown file describing
-// them as manual steps. Copilot has no hook system on any surface.
+// renderHooksProse / renderNativeSkillProse delegate to the shared generator
+// helpers, naming Copilot as the system that cannot enforce them.
 func renderHooksProse(hooks []model.Hook) string {
-	var b strings.Builder
-	b.WriteString("# Ported automation hooks\n\n")
-	b.WriteString("These were enforced hooks in the source harness. Copilot has no hook " +
-		"system, so they are NOT enforced here — follow them manually.\n\n")
-
-	byEvent := map[string][]model.Hook{}
-	var events []string
-	for _, h := range hooks {
-		if _, seen := byEvent[h.Event]; !seen {
-			events = append(events, h.Event)
-		}
-		byEvent[h.Event] = append(byEvent[h.Event], h)
-	}
-	sort.Strings(events)
-	for _, e := range events {
-		fmt.Fprintf(&b, "## On %s\n\n", e)
-		for _, h := range byEvent[e] {
-			fmt.Fprintf(&b, "- When `%s` runs: `%s`\n", h.Matcher, h.Command)
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
+	return generator.RenderHooksProse(hooks, "Copilot")
 }
 
-// renderNativeSkillProse turns a native skill into a plain markdown file. The
-// body survives; the invocation control does not.
 func renderNativeSkillProse(s model.NativeSkill) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n", s.Name)
-	if s.Description != "" {
-		b.WriteString(s.Description + "\n\n")
-	}
-	b.WriteString(strings.TrimSpace(s.Body))
-	b.WriteString("\n")
-	return b.String()
+	return generator.RenderNativeSkillBody(s)
 }
 
 // hookWarning / skillWarning are the shared degradation messages.
