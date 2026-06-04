@@ -29,6 +29,9 @@ func (g *copilotCLIGenerator) GenerateConfig(cfg model.ProjectConfig) ([]spec.Co
 			"MCP written as a portable artifact at .github/copilot-cli-mcp-config.json — "+
 				"Copilot CLI reads ~/.copilot/mcp-config.json (user-level, outside the project); "+
 				"copy it there or set COPILOT_HOME.")
+		if w := droppedExtraWarning(cfg.MCPServers); w != "" {
+			warnings = append(warnings, w)
+		}
 	}
 
 	if len(cfg.Hooks) > 0 {

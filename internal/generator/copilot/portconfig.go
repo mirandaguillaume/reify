@@ -3,6 +3,8 @@ package copilot
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/mirandaguillaume/reify/internal/generator"
 	"github.com/mirandaguillaume/reify/pkg/model"
@@ -79,6 +81,37 @@ func remoteType(s model.MCPServer) string {
 		return s.Type
 	}
 	return "http"
+}
+
+// droppedExtraWarning reports unmodelled MCP fields that the Copilot surface
+// renderers (which build explicit, schema-specific entries) cannot carry. The
+// same-schema renderers preserve Extra; these surfaces are a schema-map, so a
+// claude-specific key has no place to go — but the loss must be announced, not
+// silent. Returns "" when nothing is dropped.
+func droppedExtraWarning(servers map[string]model.MCPServer) string {
+	keySet := map[string]bool{}
+	var affected []string
+	for name, s := range servers {
+		if len(s.Extra) == 0 {
+			continue
+		}
+		affected = append(affected, name)
+		for k := range s.Extra {
+			keySet[k] = true
+		}
+	}
+	if len(affected) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	sort.Strings(affected)
+	return fmt.Sprintf("MCP field(s) [%s] on server(s) [%s] were not carried to this Copilot "+
+		"surface — they have no place in its schema. Re-add them by hand if needed.",
+		strings.Join(keys, ", "), strings.Join(affected, ", "))
 }
 
 // renderHooksProse / renderNativeSkillProse delegate to the shared generator

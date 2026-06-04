@@ -26,6 +26,9 @@ func (g *copilotVSCodeGenerator) GenerateConfig(cfg model.ProjectConfig) ([]spec
 	// MCP — full fidelity via schema-map to VS Code's servers/stdio format.
 	if len(cfg.MCPServers) > 0 {
 		files = append(files, spec.ConfigFile{Path: "../.vscode/mcp.json", Content: renderVSCodeMCP(cfg.MCPServers)})
+		if w := droppedExtraWarning(cfg.MCPServers); w != "" {
+			warnings = append(warnings, w)
+		}
 	}
 
 	// Hooks — degrade to prose, warn.
