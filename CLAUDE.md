@@ -63,6 +63,7 @@ reify build --target copilot          # compile to GitHub Copilot
 reify build --target cursor           # compile to Cursor
 reify build --target agents           # compile to AGENTS.md (Codex/Zed/Aider)
 reify build --target copilot-vscode   # Copilot — VS Code surface (.vscode/mcp.json)
+reify build --target aider            # compile to aider (CONVENTIONS.md + .aider.conf.yml)
 reify build --target reify            # compile to standalone Go binary
 reify build --target cursor --input . # also port hooks/MCP/native skills from a source project
 ```
@@ -84,7 +85,13 @@ because each surface reads MCP from a different file with a different schema.
 | `copilot-jetbrains` | `.github` | `copilot-instructions.md` | MCP → snippet (UI-managed); hooks/skills → prose |
 | `cursor` | `.cursor` | `../.cursorrules` (root) | MCP → `.cursor/mcp.json`; hooks/skills → prose `.mdc` |
 | `agents` | `.reify-agents` | `../AGENTS.md` (root) | all pillars → prose/reference (no standard) |
+| `aider` | `.reify-aider` | `../CONVENTIONS.md` (root) + `../.aider.conf.yml` loader | all pillars → prose/reference (no standard) |
 | `reify` | `.reify` | — | — |
+
+The `aider` target also emits a loading artefact (`.aider.conf.yml` with
+`read: CONVENTIONS.md`) via the `spec.LoadingGenerator` interface — aider does
+not auto-discover a conventions file. Verified end-to-end: the real `aider` CLI
+loads the emitted `CONVENTIONS.md` (see `make validate`).
 
 Config porting runs only with `--input`. Fidelity is per-pillar and honest:
 the generator's `spec.ConfigGenerator` ports natively or degrades-with-warning,

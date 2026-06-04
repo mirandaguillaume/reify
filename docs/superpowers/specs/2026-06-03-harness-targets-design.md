@@ -144,7 +144,12 @@ The config pillars (MCP / hooks / native skills) are emitted by each target's
 | copilot (generic) | `.github/copilot-instructions.md` | — (use a surface) | — | — |
 | agents | `AGENTS.md` | ⚠️ reference snippet | ⚠️ prose | ⚠️ prose |
 | windsurf | `.windsurfrules` | ✗ | ✗ | ✗ |
-| aider | `CONVENTIONS.md` + `.aider.conf.yml` | ✗ | ✗ | ✗ |
+| aider | `CONVENTIONS.md` + `.aider.conf.yml` loader | ⚠️ reference snippet | ⚠️ prose | ⚠️ prose |
+
+aider needed a new axis: a **loading artefact** (`.aider.conf.yml` with
+`read: CONVENTIONS.md`) that aider must have to load the conventions file at
+all. It's emitted via `spec.LoadingGenerator` (always, independent of
+`--input`) and verified end-to-end against the real `aider` CLI.
 
 The three Copilot surfaces are distinct targets (not one) because they read
 MCP from different files with different schemas (§2c); they embed the base
@@ -194,11 +199,12 @@ gains Hook/MCPServer.
 5. ✅ Hook/skill degradation with build-time warnings, via
    `spec.ConfigGenerator` + `build --input`. ⚠️ `check`-time warnings (warn
    *before* a build) still TODO.
-6. ✗ windsurf + aider targets (aider needs the `.aider.conf.yml` artefact)
-   — not yet built; will reuse the shared `portconfig.go` renderers.
+6. ✅ aider target — built, with the new `spec.LoadingGenerator` axis for its
+   `.aider.conf.yml` loader; verified against the real aider CLI. ✗ windsurf
+   still not built (GUI, no headless validation path).
 
 Delivered targets: claude, cursor, copilot, copilot-vscode, copilot-cli,
-copilot-jetbrains, agents, reify. The port runs end-to-end via
+copilot-jetbrains, agents, aider, reify. The port runs end-to-end via
 `reify build --target <T> --input <project>`.
 
 > **Deviation from §7 (out of scope).** copilot-cli's real MCP file is

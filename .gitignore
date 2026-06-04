@@ -54,3 +54,6 @@ profile.out
 /.reify-agents/
 /AGENTS.md
 /.vscode/mcp.json
+/.reify-aider/
+/CONVENTIONS.md
+/.aider.conf.yml
