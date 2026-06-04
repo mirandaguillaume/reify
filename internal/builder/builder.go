@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/mirandaguillaume/reify/pkg/spec"
 
 	// Register generators so spec.Get works.
+	_ "github.com/mirandaguillaume/reify/internal/generator/agents"
 	_ "github.com/mirandaguillaume/reify/internal/generator/claude"
 	_ "github.com/mirandaguillaume/reify/internal/generator/copilot"
 	_ "github.com/mirandaguillaume/reify/internal/generator/cursor"
@@ -165,7 +167,7 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 				result.Error = fmt.Sprintf("Failed to create directory for skill %q: %v", skill.Skill, err)
 				return result
 			}
-			if err := os.WriteFile(fullPath, []byte(md), 0644); err != nil {
+			if err := writeFileWithBackup(fullPath, []byte(md), 0644); err != nil {
 				result.Error = fmt.Sprintf("Failed to write skill %q: %v", skill.Skill, err)
 				return result
 			}
@@ -228,7 +230,7 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 				result.Error = fmt.Sprintf("Failed to create directory for agent %q: %v", agent.Agent, err)
 				return result
 			}
-			if err := os.WriteFile(fullPath, []byte(md), 0644); err != nil {
+			if err := writeFileWithBackup(fullPath, []byte(md), 0644); err != nil {
 				result.Error = fmt.Sprintf("Failed to write agent %q: %v", agent.Agent, err)
 				return result
 			}
@@ -250,7 +252,7 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 				result.Error = fmt.Sprintf("Failed to create directory for instructions: %v", err)
 				return result
 			}
-			if err := os.WriteFile(fullPath, []byte(instructions), 0644); err != nil {
+			if err := writeFileWithBackup(fullPath, []byte(instructions), 0644); err != nil {
 				result.Error = fmt.Sprintf("Failed to write instructions: %v", err)
 				return result
 			}
@@ -259,6 +261,68 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 
 	result.Success = true
 	return result
+}
+
+// EmitProjectConfig compiles a project's harness config (hooks/MCP/native
+// skills) for the build target and writes the resulting files under
+// outputDir, backing up any overwritten file. Targets that implement
+// spec.ConfigGenerator port-or-degrade; targets that don't are a no-op.
+// Returned warnings (e.g. a hook degraded to prose) are for the caller to
+// surface. A nil/empty config is a no-op.
+func EmitProjectConfig(target, outputDir string, cfg model.ProjectConfig) (warnings []string, err error) {
+	files, warns, _, err := PreviewProjectConfig(target, cfg)
+	if err != nil {
+		return warns, err
+	}
+	for _, f := range files {
+		full := filepath.Join(outputDir, filepath.FromSlash(f.Path))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			return warns, fmt.Errorf("create dir for %s: %w", f.Path, err)
+		}
+		if err := writeFileWithBackup(full, []byte(f.Content), 0644); err != nil {
+			return warns, fmt.Errorf("write %s: %w", f.Path, err)
+		}
+	}
+	return warns, nil
+}
+
+// PreviewProjectConfig computes what EmitProjectConfig would write — the
+// config files and degradation warnings for target — WITHOUT touching disk.
+// `supported` is false when the target has no ConfigGenerator at all (in which
+// case warnings explains the total loss). A nil/empty config is a supported
+// no-op. This backs `check`'s pre-build fidelity preview.
+func PreviewProjectConfig(target string, cfg model.ProjectConfig) (files []spec.ConfigFile, warnings []string, supported bool, err error) {
+	if cfg.IsEmpty() {
+		return nil, nil, true, nil
+	}
+	gen, err := spec.Get(target)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	cg, ok := gen.(spec.ConfigGenerator)
+	if !ok {
+		// Target has no config support at all — everything is lost; tell
+		// the caller rather than silently dropping it.
+		return nil, []string{fmt.Sprintf("target %q does not support hooks/MCP/native skills; project config not emitted", target)}, false, nil
+	}
+	files, warnings = cg.GenerateConfig(cfg)
+	return files, warnings, true, nil
+}
+
+// writeFileWithBackup writes data to path, first preserving any existing
+// file as path+".bak" — but only when the existing content actually
+// differs, so repeated builds don't churn identical backups. This protects
+// hand-edited files (e.g. a root AGENTS.md or CLAUDE.md) from being
+// silently overwritten by a build.
+func writeFileWithBackup(path string, data []byte, perm os.FileMode) error {
+	if existing, err := os.ReadFile(path); err == nil {
+		if !bytes.Equal(existing, data) {
+			if err := os.WriteFile(path+".bak", existing, perm); err != nil {
+				return fmt.Errorf("write backup %s.bak: %w", path, err)
+			}
+		}
+	}
+	return os.WriteFile(path, data, perm)
 }
 
 func countWords(text string) int {
