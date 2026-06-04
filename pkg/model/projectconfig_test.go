@@ -52,6 +52,24 @@ func TestMCPServer_HTTPRoundTrip(t *testing.T) {
 	assert.NotContains(t, string(out), `"command"`, "no empty command for a remote server")
 }
 
+// Unknown/unmodelled keys (cwd, envFile, oauth, tool-specific) must survive a
+// round-trip rather than being silently dropped.
+func TestMCPServer_PreservesUnknownFields(t *testing.T) {
+	src := `{"command":"npx","args":["x"],"cwd":"${workspaceFolder}","envFile":".env","sandboxEnabled":true}`
+	var s model.MCPServer
+	require.NoError(t, json.Unmarshal([]byte(src), &s))
+	assert.Equal(t, "npx", s.Command)
+	require.Contains(t, s.Extra, "cwd")
+	require.Contains(t, s.Extra, "envFile")
+	require.Contains(t, s.Extra, "sandboxEnabled")
+
+	out, err := json.Marshal(s)
+	require.NoError(t, err)
+	for _, want := range []string{`"cwd":"${workspaceFolder}"`, `"envFile":".env"`, `"sandboxEnabled":true`} {
+		assert.Contains(t, string(out), want, "unknown field must survive marshal")
+	}
+}
+
 // Hook mirrors the Claude Code settings.json hooks shape (event ->
 // [{matcher, hooks:[{type,command}]}]).
 func TestProjectConfigHoldsHooks(t *testing.T) {
