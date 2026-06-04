@@ -5,7 +5,7 @@ MUTATION_PKGS := ./pkg/dag/... ./internal/classifier/... ./internal/checker/...
 
 # Harnesses reify compiles its own skills/ + agents/ specs to (dogfood). Output
 # is gitignored per repo convention — generated artefacts are not committed.
-DOGFOOD_TARGETS := claude agents cursor copilot
+DOGFOOD_TARGETS := claude agents cursor copilot aider
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'

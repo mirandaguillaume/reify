@@ -29,6 +29,7 @@ and dependency-free.
 |---|---|---|---|
 | claude `settings.json` (hooks) | schema conformance | vendored official **SchemaStore "Claude Code Settings"** schema, checked with `jsonschema`/`check-jsonschema` | ✅ conforms |
 | claude `.mcp.json` | **harness acceptance** | fed to the real `claude mcp get`; it recognizes the server and attributes it to the `.mcp.json` reify wrote | ✅ accepted |
+| aider `CONVENTIONS.md` + `.aider.conf.yml` | **harness acceptance** | the real `aider --exit` loads the emitted conventions via the emitted loader ("Added CONVENTIONS.md to the chat (read-only)") | ✅ loaded |
 
 Evidence (real `claude` output during validation):
 

@@ -50,6 +50,16 @@ type ConfigGenerator interface {
 	GenerateConfig(cfg model.ProjectConfig) (files []ConfigFile, warnings []string)
 }
 
+// LoadingGenerator emits auxiliary files a target needs in order to LOAD its
+// instructions — e.g. aider's `.aider.conf.yml` with `read: CONVENTIONS.md`,
+// without which the instructions file is ignored. Optional. Unlike
+// ConfigGenerator, these are emitted on EVERY build (they are about loading
+// the prose, not porting --input runtime config). The builder writes them
+// with backup and surfaces any warnings.
+type LoadingGenerator interface {
+	LoadingFiles() (files []ConfigFile, warnings []string)
+}
+
 // FullGenerator is the composition of Generator + SkillGenerator + AgentGenerator.
 type FullGenerator interface {
 	Generator

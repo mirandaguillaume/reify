@@ -18,6 +18,7 @@ import (
 
 	// Register generators so spec.Get works.
 	_ "github.com/mirandaguillaume/reify/internal/generator/agents"
+	_ "github.com/mirandaguillaume/reify/internal/generator/aider"
 	_ "github.com/mirandaguillaume/reify/internal/generator/claude"
 	_ "github.com/mirandaguillaume/reify/internal/generator/copilot"
 	_ "github.com/mirandaguillaume/reify/internal/generator/cursor"
@@ -254,6 +255,24 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 			}
 			if err := writeFileWithBackup(fullPath, []byte(instructions), 0644); err != nil {
 				result.Error = fmt.Sprintf("Failed to write instructions: %v", err)
+				return result
+			}
+		}
+	}
+
+	// 6. Emit loading-mechanism files (e.g. aider's .aider.conf.yml) so the
+	// instructions are actually picked up. Always emitted, independent of input.
+	if lg, ok := gen.(spec.LoadingGenerator); ok {
+		files, warns := lg.LoadingFiles()
+		result.Warnings = append(result.Warnings, warns...)
+		for _, f := range files {
+			fullPath := filepath.Join(outputDir, filepath.FromSlash(f.Path))
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				result.Error = fmt.Sprintf("Failed to create directory for loading file %s: %v", f.Path, err)
+				return result
+			}
+			if err := writeFileWithBackup(fullPath, []byte(f.Content), 0644); err != nil {
+				result.Error = fmt.Sprintf("Failed to write loading file %s: %v", f.Path, err)
 				return result
 			}
 		}
