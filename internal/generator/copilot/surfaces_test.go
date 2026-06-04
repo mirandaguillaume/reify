@@ -96,6 +96,37 @@ func TestCopilotCLI_RemoteMCPKeepsURL(t *testing.T) {
 	assert.Equal(t, "https://mcp.figma.com/mcp", doc.MCPServers["figma"]["url"])
 }
 
+func TestCopilotVSCode_WarnsOnDroppedExtraFields(t *testing.T) {
+	// A claude-specific / unmodelled field has no place in the VS Code schema,
+	// so it is dropped — but the loss must be announced, not silent.
+	cfg := model.ProjectConfig{MCPServers: map[string]model.MCPServer{
+		"fs": {Command: "mcp-fs", Extra: map[string]json.RawMessage{"cwd": json.RawMessage(`"x"`)}},
+	}}
+	files, warns := cfgGen(t, "copilot-vscode").GenerateConfig(cfg)
+
+	var content string
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, ".vscode/mcp.json") {
+			content = f.Content
+		}
+	}
+	assert.NotContains(t, content, "cwd", "unmodelled field is not carried to the VS Code schema")
+
+	joined := strings.ToLower(strings.Join(warns, " "))
+	assert.Contains(t, joined, "cwd", "the dropped field is named in a warning")
+	assert.Contains(t, joined, "not carried")
+}
+
+func TestCopilotVSCode_NoExtraNoWarning(t *testing.T) {
+	cfg := model.ProjectConfig{MCPServers: map[string]model.MCPServer{
+		"git": {Command: "npx"},
+	}}
+	_, warns := cfgGen(t, "copilot-vscode").GenerateConfig(cfg)
+	for _, w := range warns {
+		assert.NotContains(t, strings.ToLower(w), "not carried", "no drop warning when there is no Extra")
+	}
+}
+
 func TestCopilotSurfaces_ShareInstructionsOutputDir(t *testing.T) {
 	// All three surfaces inherit the base copilot instructions output (.github).
 	for _, target := range []string{"copilot-vscode", "copilot-cli", "copilot-jetbrains"} {

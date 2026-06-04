@@ -31,6 +31,9 @@ func (g *copilotJetBrainsGenerator) GenerateConfig(cfg model.ProjectConfig) ([]s
 			"MCP cannot be auto-configured for JetBrains/Eclipse/Xcode — it is UI-managed "+
 				"(Copilot icon -> Edit settings -> MCP Servers). A reference snippet was written to "+
 				".github/copilot-jetbrains-mcp.json; add it through the IDE. Schema may vary by IDE version.")
+		if w := droppedExtraWarning(cfg.MCPServers); w != "" {
+			warnings = append(warnings, w)
+		}
 	}
 
 	if len(cfg.Hooks) > 0 {
