@@ -108,8 +108,14 @@ make cover        # coverage + printed summary
 make cover-html   # open HTML coverage report
 make mutation     # mutation testing on pilot packages (requires gremlins)
 make validate     # validate emitted config vs real schemas + harnesses (gated; skips when tools absent)
+make dogfood      # compile reify's own skills/agents specs to every harness (gitignored output)
 make build        # compile to ./reify
 ```
+
+`make dogfood` is reify compiling itself: it builds the repo's own `skills/` +
+`agents/` specs to claude/agents/cursor/copilot. Output is gitignored (generated
+artefacts are not committed). CI runs it on every push, so reify must always be
+able to compile its own specs.
 
 `make validate` runs `//go:build validation` tests that check emitted config
 against EXTERNAL truth — the official Claude Code Settings JSON schema and the
