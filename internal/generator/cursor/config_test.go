@@ -93,3 +93,35 @@ func TestCursorConfig_NativeSkills_DegradeToRulesWithWarning(t *testing.T) {
 	require.NotEmpty(t, warns, "degrading a native skill must warn")
 	assert.Contains(t, strings.ToLower(strings.Join(warns, " ")), "skill")
 }
+
+func ruleContent(t *testing.T, cfg model.ProjectConfig, path string) string {
+	t.Helper()
+	files, _ := newCursor().GenerateConfig(cfg)
+	for _, f := range files {
+		if f.Path == path {
+			return f.Content
+		}
+	}
+	t.Fatalf("no file at %s", path)
+	return ""
+}
+
+func TestCursorConfig_SkillWithDescriptionIsAgentRequested(t *testing.T) {
+	// A model-invocable skill (has a description) maps to a Cursor
+	// "Agent Requested" rule: description present, alwaysApply:false.
+	c := ruleContent(t, model.ProjectConfig{NativeSkills: []model.NativeSkill{
+		{Name: "scaffold", Description: "scaffold a thing", Body: "x"},
+	}}, "rules/scaffold.mdc")
+	assert.Contains(t, c, "description: scaffold a thing")
+	assert.Contains(t, c, "alwaysApply: false")
+}
+
+func TestCursorConfig_SkillWithoutDescriptionFallsBackToAlways(t *testing.T) {
+	// Without a description there is nothing for the agent to match on, so it
+	// must NOT be left as a dead Manual rule — fall back to Always.
+	c := ruleContent(t, model.ProjectConfig{NativeSkills: []model.NativeSkill{
+		{Name: "scaffold", Body: "x"},
+	}}, "rules/scaffold.mdc")
+	assert.NotContains(t, c, "description:")
+	assert.Contains(t, c, "alwaysApply: true")
+}

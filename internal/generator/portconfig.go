@@ -31,8 +31,13 @@ func RenderMCPServers(servers map[string]model.MCPServer) string {
 func RenderHooksProse(hooks []model.Hook, systemName string) string {
 	var b strings.Builder
 	b.WriteString("# Ported automation hooks\n\n")
-	fmt.Fprintf(&b, "These were enforced hooks in the source harness. %s has no hook "+
-		"system, so follow them manually — they are not enforced.\n\n", systemName)
+	// Strong formulation on purpose: a hook was an *enforced* guarantee, and
+	// the reify-eval bench shows weak/soft phrasing of a rule is obeyed far
+	// less than an imperative one. Since the enforcement is gone, the prose
+	// must carry the obligation as forcefully as possible.
+	fmt.Fprintf(&b, "These were **enforced** hooks in the source harness. %s has no hook "+
+		"system, so they are not enforced automatically — you **must** perform each one "+
+		"yourself, every time the trigger occurs, without being asked.\n\n", systemName)
 
 	byEvent := map[string][]model.Hook{}
 	var events []string
@@ -46,7 +51,7 @@ func RenderHooksProse(hooks []model.Hook, systemName string) string {
 	for _, e := range events {
 		fmt.Fprintf(&b, "## On %s\n\n", e)
 		for _, h := range byEvent[e] {
-			fmt.Fprintf(&b, "- When `%s` runs: `%s`\n", h.Matcher, h.Command)
+			fmt.Fprintf(&b, "- **Always** run `%s` immediately after every `%s` operation — do not skip it.\n", h.Command, h.Matcher)
 		}
 		b.WriteString("\n")
 	}

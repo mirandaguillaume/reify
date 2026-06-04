@@ -71,16 +71,26 @@ func hooksRule(hooks []model.Hook) string {
 	return b.String()
 }
 
-// renderSkillAsRule turns a native skill into a Cursor rule (.mdc), keeping
-// the description in frontmatter (Cursor's convention). The body survives as
-// prose; the invocation control does not.
+// renderSkillAsRule turns a native skill into a Cursor rule (.mdc), mapping
+// the skill to the right Cursor rule TYPE so it actually fires:
+//
+//   - With a description → "Agent Requested" (description + alwaysApply:false):
+//     Cursor's agent pulls the rule in when the description is relevant, which
+//     mirrors a model-invocable skill.
+//   - Without a description → "Always" (alwaysApply:true): there is nothing for
+//     the agent to match on, so leaving alwaysApply:false would make it a
+//     "Manual" rule that only fires on explicit @mention — effectively dead.
+//     Always-apply keeps it in context instead of silently never firing.
+//
+// The body survives as prose; the model-invocation control does not (warned).
 func renderSkillAsRule(s model.NativeSkill) string {
+	hasDesc := s.Description != ""
 	var b strings.Builder
 	b.WriteString("---\n")
-	if s.Description != "" {
+	if hasDesc {
 		fmt.Fprintf(&b, "description: %s\n", s.Description)
 	}
-	b.WriteString("alwaysApply: false\n")
+	fmt.Fprintf(&b, "alwaysApply: %t\n", !hasDesc)
 	b.WriteString("---\n\n")
 	fmt.Fprintf(&b, "# %s\n\n", s.Name)
 	b.WriteString(strings.TrimSpace(s.Body))

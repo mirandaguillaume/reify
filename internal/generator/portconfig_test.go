@@ -31,6 +31,11 @@ func TestRenderHooksProse_NamesSystemAndKeepsCommands(t *testing.T) {
 	assert.Contains(t, out, "On PostToolUse")
 	assert.Contains(t, out, "gofmt -w .")
 	assert.Contains(t, out, "Edit")
+	// Strong formulation (reify-eval finding: imperative phrasing is obeyed
+	// more than soft phrasing). The degraded prose must be imperative.
+	assert.Contains(t, out, "Always")
+	assert.Contains(t, out, "must")
+	assert.Contains(t, out, "do not skip it")
 }
 
 func TestRenderNativeSkillBody_TitleDescBody(t *testing.T) {
