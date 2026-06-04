@@ -35,10 +35,29 @@ type Hook struct {
 // harnesses (Claude Code, Cursor, VS Code...). Only the declaration is
 // modelled — the server binary/infra is out of scope. The JSON tags match
 // the cross-tool schema so it unmarshals straight from .mcp.json.
+//
+// Two transports are modelled: local stdio servers (Command/Args/Env) and
+// remote HTTP/SSE servers (URL/Headers); Type names the transport and is
+// empty for stdio. Modelling the remote case is what stops a real .mcp.json
+// (which routinely carries HTTP servers like Figma or Google Drive) from
+// being silently corrupted into an empty-command stdio entry on a port.
 type MCPServer struct {
-	Command string            `json:"command"`
+	Type string `json:"type,omitempty"` // "stdio" (default), "http", or "sse"
+
+	// stdio transport
+	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+
+	// http / sse transport
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// IsRemote reports whether this is a remote (HTTP/SSE) server rather than a
+// local stdio command — i.e. it carries a URL or an explicit http/sse type.
+func (s MCPServer) IsRemote() bool {
+	return s.URL != "" || s.Type == "http" || s.Type == "sse"
 }
 
 // NativeSkill is a harness-native skill file (e.g. Claude Code

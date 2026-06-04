@@ -52,6 +52,50 @@ func TestCopilotJetBrains_MCPIsUIManagedWarning(t *testing.T) {
 	assert.Contains(t, strings.ToLower(strings.Join(warns, " ")), "ui-managed")
 }
 
+func TestCopilotVSCode_RemoteMCPKeepsURL(t *testing.T) {
+	// A remote (HTTP) server must keep its url and type — not be flattened to
+	// an empty-command stdio entry (the silent-corruption regression).
+	cfg := model.ProjectConfig{MCPServers: map[string]model.MCPServer{
+		"figma": {Type: "http", URL: "https://mcp.figma.com/mcp"},
+	}}
+	files, _ := cfgGen(t, "copilot-vscode").GenerateConfig(cfg)
+	var content string
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, ".vscode/mcp.json") {
+			content = f.Content
+		}
+	}
+	require.NotEmpty(t, content)
+	var doc struct {
+		Servers map[string]map[string]any `json:"servers"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(content), &doc))
+	assert.Equal(t, "http", doc.Servers["figma"]["type"])
+	assert.Equal(t, "https://mcp.figma.com/mcp", doc.Servers["figma"]["url"])
+	_, hasCmd := doc.Servers["figma"]["command"]
+	assert.False(t, hasCmd, "remote server must not carry a command")
+}
+
+func TestCopilotCLI_RemoteMCPKeepsURL(t *testing.T) {
+	cfg := model.ProjectConfig{MCPServers: map[string]model.MCPServer{
+		"figma": {Type: "http", URL: "https://mcp.figma.com/mcp"},
+	}}
+	files, _ := cfgGen(t, "copilot-cli").GenerateConfig(cfg)
+	var content string
+	for _, f := range files {
+		if f.Path == "copilot-cli-mcp-config.json" {
+			content = f.Content
+		}
+	}
+	require.NotEmpty(t, content)
+	var doc struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(content), &doc))
+	assert.Equal(t, "http", doc.MCPServers["figma"]["type"])
+	assert.Equal(t, "https://mcp.figma.com/mcp", doc.MCPServers["figma"]["url"])
+}
+
 func TestCopilotSurfaces_ShareInstructionsOutputDir(t *testing.T) {
 	// All three surfaces inherit the base copilot instructions output (.github).
 	for _, target := range []string{"copilot-vscode", "copilot-cli", "copilot-jetbrains"} {

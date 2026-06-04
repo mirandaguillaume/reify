@@ -30,6 +30,28 @@ func TestMCPServerUnmarshalsStandardSchema(t *testing.T) {
 	assert.Equal(t, "mcp-fs", doc.MCPServers["fs"].Command)
 }
 
+func TestMCPServer_IsRemote(t *testing.T) {
+	assert.False(t, model.MCPServer{Command: "npx"}.IsRemote(), "stdio command server is local")
+	assert.True(t, model.MCPServer{URL: "https://x/mcp"}.IsRemote(), "url marks remote")
+	assert.True(t, model.MCPServer{Type: "http"}.IsRemote(), "http type marks remote")
+	assert.True(t, model.MCPServer{Type: "sse"}.IsRemote(), "sse type marks remote")
+}
+
+// An HTTP server from a real .mcp.json must round-trip without losing its url
+// — the regression guard for the silent-corruption bug (a remote server was
+// previously flattened to an empty-command stdio entry).
+func TestMCPServer_HTTPRoundTrip(t *testing.T) {
+	var s model.MCPServer
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"http","url":"https://mcp.figma.com/mcp","headers":{"X":"1"}}`), &s))
+	assert.True(t, s.IsRemote())
+	assert.Equal(t, "https://mcp.figma.com/mcp", s.URL)
+
+	out, err := json.Marshal(s)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"url":"https://mcp.figma.com/mcp"`)
+	assert.NotContains(t, string(out), `"command"`, "no empty command for a remote server")
+}
+
 // Hook mirrors the Claude Code settings.json hooks shape (event ->
 // [{matcher, hooks:[{type,command}]}]).
 func TestProjectConfigHoldsHooks(t *testing.T) {

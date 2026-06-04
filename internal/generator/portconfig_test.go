@@ -22,6 +22,15 @@ func TestRenderMCPServers_StandardSchema(t *testing.T) {
 	assert.Equal(t, "npx", doc.MCPServers["git"].Command)
 }
 
+func TestRenderMCPServers_PreservesRemoteURL(t *testing.T) {
+	out := generator.RenderMCPServers(map[string]model.MCPServer{
+		"figma": {Type: "http", URL: "https://mcp.figma.com/mcp"},
+	})
+	assert.Contains(t, out, `"url": "https://mcp.figma.com/mcp"`)
+	assert.Contains(t, out, `"type": "http"`)
+	assert.NotContains(t, out, `"command"`, "a remote server must not emit an empty command")
+}
+
 func TestRenderHooksProse_NamesSystemAndKeepsCommands(t *testing.T) {
 	out := generator.RenderHooksProse([]model.Hook{
 		{Event: "PostToolUse", Matcher: "Edit", Command: "gofmt -w ."},
