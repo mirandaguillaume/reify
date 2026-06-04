@@ -55,22 +55,40 @@ reify classify <file>                 # map instructions to the 5 facets
 reify import <source>                 # decompose an agent file into skills
 reify doctor <file>                   # LLM-powered structural analysis
 reify check <file>                    # compliance risk per harness
+reify check --input <project>         # preview config-porting fidelity per target (no LLM)
 reify lint [path]                     # lint skill specs
 reify score [path]                    # quality scoring
 reify build --target claude           # compile to Claude Code
 reify build --target copilot          # compile to GitHub Copilot
 reify build --target cursor           # compile to Cursor
+reify build --target agents           # compile to AGENTS.md (Codex/Zed/Aider)
+reify build --target copilot-vscode   # Copilot — VS Code surface (.vscode/mcp.json)
 reify build --target reify            # compile to standalone Go binary
+reify build --target cursor --input . # also port hooks/MCP/native skills from a source project
 ```
+
+`--input <project>` reads a source project's `.claude/settings.json` (hooks),
+`.mcp.json`, and `.claude/skills/*/SKILL.md`, then re-emits them for the target
+— natively where supported, **degraded-with-warning** where not. Copilot is
+three distinct targets (`copilot-vscode`, `copilot-cli`, `copilot-jetbrains`)
+because each surface reads MCP from a different file with a different schema.
 
 ### Output paths per target
 
-| Target | `DefaultOutputDir` | Instructions file |
-|---|---|---|
-| `claude` | `.claude` | `CLAUDE.md` |
-| `copilot` | `.github` | `copilot-instructions.md` |
-| `cursor` | `.cursor` | `../.cursorrules` (root) |
-| `reify` | `.reify` | — |
+| Target | `DefaultOutputDir` | Instructions file | Config porting (hooks/MCP/skills) |
+|---|---|---|---|
+| `claude` | `.claude` | `CLAUDE.md` | native (settings.json, .mcp.json, SKILL.md) |
+| `copilot` | `.github` | `copilot-instructions.md` | none (use a surface target) |
+| `copilot-vscode` | `.github` | `copilot-instructions.md` | MCP → `.vscode/mcp.json` (`servers`+stdio); hooks/skills → prose |
+| `copilot-cli` | `.github` | `copilot-instructions.md` | MCP → portable artifact (user-level `~/.copilot/`); hooks/skills → prose |
+| `copilot-jetbrains` | `.github` | `copilot-instructions.md` | MCP → snippet (UI-managed); hooks/skills → prose |
+| `cursor` | `.cursor` | `../.cursorrules` (root) | MCP → `.cursor/mcp.json`; hooks/skills → prose `.mdc` |
+| `agents` | `.reify-agents` | `../AGENTS.md` (root) | all pillars → prose/reference (no standard) |
+| `reify` | `.reify` | — | — |
+
+Config porting runs only with `--input`. Fidelity is per-pillar and honest:
+the generator's `spec.ConfigGenerator` ports natively or degrades-with-warning,
+and `reify check --input` previews this before a build.
 
 ## Dev commands
 
@@ -89,8 +107,14 @@ make test         # all tests
 make cover        # coverage + printed summary
 make cover-html   # open HTML coverage report
 make mutation     # mutation testing on pilot packages (requires gremlins)
+make validate     # validate emitted config vs real schemas + harnesses (gated; skips when tools absent)
 make build        # compile to ./reify
 ```
+
+`make validate` runs `//go:build validation` tests that check emitted config
+against EXTERNAL truth — the official Claude Code Settings JSON schema and the
+real `claude mcp` CLI — not reify's own assumptions. See
+`docs/validation/harness-config-validation.md` for what is and isn't verified.
 
 ## CI
 
@@ -151,9 +175,11 @@ doctor/                         # reify doctor — LLM-powered structural analys
 importer/                       # agent file → skill spec decomposition
 builder/                        # build orchestration (entry point for `reify build`)
 generator/
-  claude/                       # Claude Code generator
-  copilot/                      # GitHub Copilot generator
-  cursor/                       # Cursor generator
+  *.go                          # shared helpers: facet rendering + portconfig.go (MCP/hooks/skills)
+  claude/                       # Claude Code generator (+ config: settings.json/.mcp.json/SKILL.md)
+  copilot/                      # GitHub Copilot — generic + vscode/cli/jetbrains surface targets
+  cursor/                       # Cursor generator (+ degrading config)
+  agents/                       # AGENTS.md generator (+ degrading config)
   reify/                        # standalone Go runtime generator
 analyzer/                       # dependency check, loop detector, scoring
 linter/                         # lint rules
@@ -174,12 +200,13 @@ yaml/                           # YAML loader
 
 1. Create `internal/generator/<target>/` with files mirroring `cursor/` (`<target>.go`, `instructions.go`, `skill.go`).
 2. Implement `pkg/spec.Generator` (and optionally `SkillGenerator`, `InstructionsGenerator`, `Configurable`).
-3. Self-register in `init()`:
+3. To port runtime config (hooks/MCP/native skills), also implement `spec.ConfigGenerator` (`config.go`). Reuse the shared renderers in `internal/generator/portconfig.go` (`RenderMCPServers`, `RenderHooksProse`, `RenderNativeSkillBody`) — port natively where the harness supports a pillar, otherwise degrade to prose and **return a warning** (never drop silently). `build --input` and `check --input` pick it up automatically.
+4. Self-register in `init()`:
    ```go
    func init() { spec.Register("<target>", func() spec.Generator { return &gen{} }) }
    ```
-4. Add a blank-import in `internal/builder/builder.go` so the registration fires.
-5. Add tests in the same package (see Testing).
+5. Add a blank-import in `internal/builder/builder.go` so the registration fires.
+6. Add tests in the same package (see Testing). For config output, prefer validating against an external schema or the real harness CLI (gated `//go:build validation`) over self-consistent assertions — see `docs/validation/`.
 
 ## Adding a new LLM provider
 

@@ -38,6 +38,23 @@ git:
   Scope: Project config (shared via .mcp.json)
 ```
 
+## Real-case run (not a synthetic fixture)
+
+Beyond the gated tests (which use a toy config), the pipeline was exercised on
+**real production config**: a developer's actual `~/.claude/settings.json`
+(2 hooks) plus a real project `.mcp.json` (2 servers: `grepai`, `serena`).
+
+| Step | Result |
+|---|---|
+| `reify check --input` on the real source | parsed clean; claude ✓ full, cursor/copilot ⚠ degrade (2 hooks) |
+| emitted `settings.json` vs official schema | `jsonschema` exit 0 — valid |
+| emitted `.mcp.json` vs real `claude mcp list` | both servers recognized (claude even flagged `serena` as multiply-scoped — proof it actually loaded and reasoned over the file) |
+| `reify build --target cursor --input` | degraded correctly (`mcp.json` kept, hooks → `rules/ported-hooks.mdc` + warning) |
+
+The temp project was deleted after the run — it held a copy of the real
+`.mcp.json` whose MCP `env` may carry secrets. Real-case validation must not
+leave secret copies behind.
+
 ## Honest gaps
 
 These are **not** validated beyond self-consistency, and the reason is recorded
