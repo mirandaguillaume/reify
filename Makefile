@@ -1,4 +1,4 @@
-.PHONY: help build build-calibrate test test-race vet cover cover-html mutation clean
+.PHONY: help build build-calibrate test test-race vet cover cover-html mutation validate clean
 
 # Pilot mutation testing surface — keep narrow, expand only when the score is stable.
 MUTATION_PKGS := ./pkg/dag/... ./internal/classifier/... ./internal/checker/...
@@ -34,6 +34,9 @@ mutation: ## Run mutation testing on the pilot packages (requires gremlins)
 		exit 1; \
 	}
 	gremlins unleash $(MUTATION_PKGS)
+
+validate: ## Validate emitted config against real schemas + harnesses (gated; skips when tools absent)
+	go test -tags validation ./...
 
 clean: ## Remove build artifacts
 	rm -f reify reify-calibrate coverage.out
