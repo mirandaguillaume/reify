@@ -1,7 +1,11 @@
-.PHONY: help build build-calibrate test test-race vet cover cover-html mutation validate clean
+.PHONY: help build build-calibrate test test-race vet cover cover-html mutation validate dogfood clean
 
 # Pilot mutation testing surface — keep narrow, expand only when the score is stable.
 MUTATION_PKGS := ./pkg/dag/... ./internal/classifier/... ./internal/checker/...
+
+# Harnesses reify compiles its own skills/ + agents/ specs to (dogfood). Output
+# is gitignored per repo convention — generated artefacts are not committed.
+DOGFOOD_TARGETS := claude agents cursor copilot
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -37,6 +41,12 @@ mutation: ## Run mutation testing on the pilot packages (requires gremlins)
 
 validate: ## Validate emitted config against real schemas + harnesses (gated; skips when tools absent)
 	go test -tags validation ./...
+
+dogfood: build ## Compile this repo's own skills/agents specs to every harness (gitignored output)
+	@for t in $(DOGFOOD_TARGETS); do \
+		echo "── reify build --target $$t ──"; \
+		./reify build --target $$t || exit 1; \
+	done
 
 clean: ## Remove build artifacts
 	rm -f reify reify-calibrate coverage.out

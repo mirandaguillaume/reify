@@ -26,6 +26,9 @@ Thumbs.db
 dist/
 build/
 
+# Backups written by reify before overwriting an existing file
+*.bak
+
 # Coverage
 coverage.txt
 coverage.html
@@ -41,5 +44,13 @@ profile.out
 /.github/skills/
 /.github/agents/
 /.github/copilot-instructions.md
+/.github/copilot-cli-mcp-config.json
+/.github/copilot-jetbrains-mcp.json
+/.github/ported-hooks.md
+/.github/ported-skills/
 /.cursor/rules/
+/.cursor/mcp.json
 /.cursorrules
+/.reify-agents/
+/AGENTS.md
+/.vscode/mcp.json

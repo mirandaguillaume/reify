@@ -63,3 +63,6 @@ jobs:
           cache: true
       - name: Build CLI
         run: go build -v ./cmd/reify
+
+      - name: Dogfood — compile reify's own specs to every harness
+        run: make dogfood
