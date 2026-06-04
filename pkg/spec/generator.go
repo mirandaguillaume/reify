@@ -33,6 +33,23 @@ type InstructionsGenerator interface {
 	InstructionsPath() string
 }
 
+// ConfigFile is one harness-config artefact a target wants written,
+// relative to the build output dir (or escaping it with ../ for root
+// files, like instructions do).
+type ConfigFile struct {
+	Path    string
+	Content string
+}
+
+// ConfigGenerator compiles project-level harness config (hooks, MCP
+// servers, native skills) for a target. Optional. A target that supports
+// a feature natively emits it verbatim; one that does not degrades it
+// (e.g. a hook → a prose instruction) and returns a warning. The builder
+// writes the files and surfaces the warnings in BuildResult.
+type ConfigGenerator interface {
+	GenerateConfig(cfg model.ProjectConfig) (files []ConfigFile, warnings []string)
+}
+
 // FullGenerator is the composition of Generator + SkillGenerator + AgentGenerator.
 type FullGenerator interface {
 	Generator

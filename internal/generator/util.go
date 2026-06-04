@@ -160,6 +160,62 @@ func FormatCompactSkill(skill model.SkillBehavior) string {
 	return sb.String()
 }
 
+// FormatObservability renders the observability facet as a markdown section.
+// Returns "" when the facet carries no signal, so callers can skip it without
+// emitting an empty heading. Part of the facet-ordered render: observability
+// sits between strategy and security in the proven-efficacy order.
+func FormatObservability(o model.ObservabilityFacet) string {
+	if o.TraceLevel == "" && len(o.Metrics) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Observability\n\n")
+	if o.TraceLevel != "" {
+		sb.WriteString("- Trace level: " + string(o.TraceLevel) + "\n")
+	}
+	if len(o.Metrics) > 0 {
+		sb.WriteString("- Metrics: " + strings.Join(o.Metrics, ", ") + "\n")
+	}
+	return sb.String()
+}
+
+// FormatSecurity renders the security facet as a markdown section. Returns ""
+// when the facet declares no constraints. Generators emit this LAST (recency
+// bias for least-privilege) — never drop it, or the translation silently
+// loses a security guarantee.
+func FormatSecurity(s model.SecurityFacet) string {
+	if s.Filesystem == "" && s.Network == "" && len(s.Secrets) == 0 &&
+		s.Sandbox == "" && s.FileAccess == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Security\n\n")
+	if s.Filesystem != "" {
+		sb.WriteString("- Filesystem: " + string(s.Filesystem) + "\n")
+	}
+	if s.Network != "" {
+		sb.WriteString("- Network: " + string(s.Network) + "\n")
+	}
+	if len(s.Secrets) > 0 {
+		sb.WriteString("- Secrets: " + strings.Join(s.Secrets, ", ") + "\n")
+	}
+	if s.Sandbox != "" {
+		sb.WriteString("- Sandbox: " + string(s.Sandbox) + "\n")
+	}
+	if s.FileAccess != nil {
+		if len(s.FileAccess.Read) > 0 {
+			sb.WriteString("- Read paths: " + strings.Join(s.FileAccess.Read, ", ") + "\n")
+		}
+		if len(s.FileAccess.Write) > 0 {
+			sb.WriteString("- Write paths: " + strings.Join(s.FileAccess.Write, ", ") + "\n")
+		}
+		if len(s.FileAccess.Deny) > 0 {
+			sb.WriteString("- Deny paths: " + strings.Join(s.FileAccess.Deny, ", ") + "\n")
+		}
+	}
+	return sb.String()
+}
+
 // BuildSkillDescription creates a human-readable description from skill facets.
 func BuildSkillDescription(skill model.SkillBehavior) string {
 	if skill.Strategy.Approach != "" {

@@ -14,12 +14,12 @@ import (
 )
 
 func init() {
-	var providerFlag, modelFlag string
+	var providerFlag, modelFlag, inputDir string
 	var all, verbose bool
 	var targets []string
 
 	checkCmd := &cobra.Command{
-		Use:   "check <file|directory>",
+		Use:   "check [file|directory]",
 		Short: "Assess instruction following compliance risk per harness",
 		Long: `Analyzes each instruction in an agent file and flags compliance risks
 per AI coding harness (Claude Code, Copilot, Cursor).
@@ -32,10 +32,19 @@ Risk levels are derived from documented factors — no invented percentages:
   - Negative framing: IFEval benchmark (Zhou et al. 2023)
   - Middle position:  Liu et al. 2023 "Lost in the Middle"
   - Semantic constraint: not statically verifiable
-  - Harness weakness: community-reported empirical observation (labeled)`,
-		Args: cobra.ExactArgs(1),
+  - Harness weakness: community-reported empirical observation (labeled)
+
+With --input <project>, also previews how the source project's runtime
+config (hooks, MCP servers, native skills) would port to each target —
+what stays native and what degrades — BEFORE you run a build. This preview
+is deterministic and needs no LLM; it runs even with no file argument.`,
+		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			runCheck(args[0], providerFlag, modelFlag, targets, all, verbose)
+			path := ""
+			if len(args) > 0 {
+				path = args[0]
+			}
+			runCheck(path, providerFlag, modelFlag, inputDir, targets, all, verbose)
 		},
 	}
 
@@ -44,6 +53,7 @@ Risk levels are derived from documented factors — no invented percentages:
 	checkCmd.Flags().BoolVar(&all, "all", false, "show all instructions including low-risk ones")
 	checkCmd.Flags().BoolVar(&verbose, "verbose", false, "in directory mode, print full per-file detail (default: summary table)")
 	checkCmd.Flags().StringSliceVar(&targets, "targets", checker.Harnesses, "harnesses to check against")
+	checkCmd.Flags().StringVar(&inputDir, "input", "", "preview hooks/MCP/native-skill porting from this source project (no LLM)")
 
 	rootCmd.AddCommand(checkCmd)
 }
@@ -56,7 +66,21 @@ type checkFileResult struct {
 	Empty  bool
 }
 
-func runCheck(path, providerFlag, modelFlag string, targets []string, all, verbose bool) {
+func runCheck(path, providerFlag, modelFlag, inputDir string, targets []string, all, verbose bool) {
+	// Deterministic config-porting fidelity preview (no LLM). Runs whenever
+	// --input is given, even without a file to analyze.
+	if inputDir != "" {
+		printConfigFidelity(inputDir, targets)
+		if path == "" {
+			return
+		}
+		fmt.Println()
+	}
+	if path == "" {
+		fmt.Println(color.RedString("Error: provide a file/directory to check, or --input <project> to preview config porting."))
+		os.Exit(1)
+	}
+
 	files, err := discovery.Resolve(path)
 	if err != nil {
 		fmt.Println(color.RedString("Error: %v", err))
@@ -111,6 +135,56 @@ func runCheck(path, providerFlag, modelFlag string, targets []string, all, verbo
 		return
 	}
 	printCheckSummary(results, targets)
+}
+
+// printConfigFidelity previews, per target, how the source project's runtime
+// config (hooks/MCP/native skills) would port — which files would be written
+// and what degrades — without running a build. Deterministic, no LLM.
+func printConfigFidelity(inputDir string, targets []string) {
+	bold := color.New(color.Bold)
+	faint := color.New(color.Faint)
+	bold.Printf("Config porting fidelity (source: %s)\n\n", inputDir)
+
+	for _, harness := range targets {
+		target := toBuildTarget(harness)
+		files, warnings, supported, err := PreviewPortConfig(inputDir, target)
+		switch {
+		case err != nil:
+			fmt.Printf("  %-16s %s\n", target, faint.Sprint("(not a build target)"))
+		case !supported:
+			fmt.Printf("  %-16s %s\n", target, color.YellowString("no config support"))
+			for _, w := range warnings {
+				fmt.Printf("      %s %s\n", color.YellowString("!"), w)
+			}
+		case len(files) == 0:
+			fmt.Printf("  %-16s %s\n", target, faint.Sprint("nothing to port"))
+		default:
+			names := make([]string, 0, len(files))
+			for _, f := range files {
+				names = append(names, f.Path)
+			}
+			icon := color.GreenString("✓ full")
+			if len(warnings) > 0 {
+				icon = color.YellowString("⚠ degrades")
+			}
+			fmt.Printf("  %-16s %s  %s\n", target, icon, faint.Sprint(strings.Join(names, ", ")))
+			for _, w := range warnings {
+				fmt.Printf("      %s %s\n", color.YellowString("!"), w)
+			}
+		}
+	}
+	fmt.Println()
+	fmt.Println(faint.Sprint("Preview only — run 'reify build --target <T> --input " + inputDir + "' to emit."))
+}
+
+// toBuildTarget maps a check harness name to the corresponding build target
+// name where they differ (the checker calls Claude Code "claude-code"; the
+// build target is "claude").
+func toBuildTarget(harness string) string {
+	if harness == "claude-code" {
+		return "claude"
+	}
+	return harness
 }
 
 func checkOne(filePath string, provider llm.Provider, targets []string) checkFileResult {
