@@ -270,20 +270,10 @@ func RunBuildWithOptions(skillsDir, agentsDir, outputDir, target string, enrichM
 // Returned warnings (e.g. a hook degraded to prose) are for the caller to
 // surface. A nil/empty config is a no-op.
 func EmitProjectConfig(target, outputDir string, cfg model.ProjectConfig) (warnings []string, err error) {
-	if cfg.IsEmpty() {
-		return nil, nil
-	}
-	gen, err := spec.Get(target)
+	files, warns, _, err := PreviewProjectConfig(target, cfg)
 	if err != nil {
-		return nil, err
+		return warns, err
 	}
-	cg, ok := gen.(spec.ConfigGenerator)
-	if !ok {
-		// Target has no config support at all — everything is lost; tell
-		// the caller rather than silently dropping it.
-		return []string{fmt.Sprintf("target %q does not support hooks/MCP/native skills; project config not emitted", target)}, nil
-	}
-	files, warns := cg.GenerateConfig(cfg)
 	for _, f := range files {
 		full := filepath.Join(outputDir, filepath.FromSlash(f.Path))
 		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
@@ -294,6 +284,29 @@ func EmitProjectConfig(target, outputDir string, cfg model.ProjectConfig) (warni
 		}
 	}
 	return warns, nil
+}
+
+// PreviewProjectConfig computes what EmitProjectConfig would write — the
+// config files and degradation warnings for target — WITHOUT touching disk.
+// `supported` is false when the target has no ConfigGenerator at all (in which
+// case warnings explains the total loss). A nil/empty config is a supported
+// no-op. This backs `check`'s pre-build fidelity preview.
+func PreviewProjectConfig(target string, cfg model.ProjectConfig) (files []spec.ConfigFile, warnings []string, supported bool, err error) {
+	if cfg.IsEmpty() {
+		return nil, nil, true, nil
+	}
+	gen, err := spec.Get(target)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	cg, ok := gen.(spec.ConfigGenerator)
+	if !ok {
+		// Target has no config support at all — everything is lost; tell
+		// the caller rather than silently dropping it.
+		return nil, []string{fmt.Sprintf("target %q does not support hooks/MCP/native skills; project config not emitted", target)}, false, nil
+	}
+	files, warnings = cg.GenerateConfig(cfg)
+	return files, warnings, true, nil
 }
 
 // writeFileWithBackup writes data to path, first preserving any existing

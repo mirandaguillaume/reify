@@ -58,6 +58,24 @@ func TestPortProjectConfig_CursorDegradesHooksKeepsMCP(t *testing.T) {
 	assert.Contains(t, strings.ToLower(strings.Join(warns, " ")), "not enforced")
 }
 
+func TestPreviewPortConfig_ReportsWithoutWriting(t *testing.T) {
+	src := writeSourceProject(t)
+
+	files, warns, supported, err := cmd.PreviewPortConfig(src, "cursor")
+	require.NoError(t, err)
+	assert.True(t, supported)
+	require.NotEmpty(t, files, "preview reports the files that would be written")
+	assert.Contains(t, strings.ToLower(strings.Join(warns, " ")), "not enforced")
+
+	// Preview must not create anything under the source project.
+	entries, err := os.ReadDir(src)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotEqual(t, "mcp.json", e.Name(), "preview must not write config files")
+		assert.NotEqual(t, "rules", e.Name())
+	}
+}
+
 func TestPortProjectConfig_EmptySourceIsNoOp(t *testing.T) {
 	// A project with no .claude and no .mcp.json ports nothing, without error.
 	warns, err := cmd.PortProjectConfig(t.TempDir(), "cursor", t.TempDir())

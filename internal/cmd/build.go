@@ -50,6 +50,20 @@ func PortProjectConfig(inputDir, target, outputDir string) ([]string, error) {
 	return builder.EmitProjectConfig(target, outputDir, cfg)
 }
 
+// PreviewPortConfig reports what PortProjectConfig WOULD emit for target from
+// the source project at inputDir — the files it would write and the
+// degradation warnings — without touching disk. Used by `check` to warn about
+// fidelity loss before a build runs.
+func PreviewPortConfig(inputDir, target string) (files []spec.ConfigFile, warnings []string, supported bool, err error) {
+	claudeDir := filepath.Join(inputDir, ".claude")
+	mcpFile := filepath.Join(inputDir, ".mcp.json")
+	cfg, err := importer.ImportProjectConfig(claudeDir, mcpFile)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("reading source config from %s: %w", inputDir, err)
+	}
+	return builder.PreviewProjectConfig(target, cfg)
+}
+
 // PrintBuildResult prints the build result to stdout with colored output.
 func PrintBuildResult(result BuildResult) {
 	if !result.Success {
